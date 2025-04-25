@@ -1,0 +1,8 @@
+langchain
+langchain-google-genai
+google-generativeai
+instagrapi
+python-dotenv
+requests
+moviepy
+imageio-ffmpeg      # optional but recommended
