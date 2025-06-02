@@ -3,17 +3,8 @@ import random
 import requests
 import subprocess
 from dotenv import load_dotenv
-from langchain.tools import tool
-from instagrapi import Client
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.schema import HumanMessage
-import pickle
 from langchain.schema import SystemMessage, HumanMessage
-from instagrapi import Client
-import json
-import cv2
-import numpy as np
-from PIL import Image, ImageEnhance
 
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
@@ -22,7 +13,6 @@ from googleapiclient.http import MediaFileUpload
 
 from datetime import datetime
 import re
-from dotenv import load_dotenv
 from google.cloud import texttospeech
 import tweepy
 import tempfile
@@ -404,42 +394,6 @@ def clean_text_for_tts(text: str) -> str:
     # Collapse multiple spaces
     text = re.sub(r"\s{2,}", " ", text)
     return text.strip()
-
-def publish_photo(image_url: str, caption: str) -> dict:
-    """
-    Uploads an image to Instagram via Graph API and publishes it.
-    Returns the API response as a dict.
-    """
-    # Enforce hashtag limit
-    caption = limit_hashtags(caption)
-    print(f"Generated caption after limit: {caption}")
-    # 1. Create a media container
-    create_endpoint = f"https://graph.facebook.com/v17.0/{IG_USER_ID}/media"
-    create_payload = {
-        "image_url": image_url,
-        "caption": caption,
-        "access_token": ACCESS_TOKEN
-    }
-    resp = requests.post(create_endpoint, data=create_payload)
-    if resp.status_code != 200:
-        print("❌ create-media error:", resp.json())
-        return resp.json()
-    container_id = resp.json().get("id")
-    print("✅ media container id:", container_id)
-
-    # 2. Publish the container
-    publish_endpoint = f"https://graph.facebook.com/v17.0/{IG_USER_ID}/media_publish"
-    publish_payload = {
-        "creation_id": container_id,
-        "access_token": ACCESS_TOKEN
-    }
-    pub_resp = requests.post(publish_endpoint, data=publish_payload)
-    if pub_resp.status_code != 200:
-        print("❌ publish-media error:", pub_resp.json())
-        return pub_resp.json()
-    print("✅ publish success:", pub_resp.json())
-    return pub_resp.json()
-
 
 # Function: Generate Instagram Caption using Gemini
 def generate_video_narration(nature: str, video_url: str, metadata: dict) -> str:
