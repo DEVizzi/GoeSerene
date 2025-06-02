@@ -155,7 +155,8 @@ def combine_video_with_music_and_voiceover(video_path: str, voiceover_path: str)
     music_files = [f for f in os.listdir(music_dir) if f.endswith(".mp3")]
     music_path = os.path.join(music_dir, random.choice(music_files))
 
-    delayed_voice = os.path.join(os.getenv("TEMP"), "delayed_voice.mp3")
+    temp_dir = tempfile.gettempdir()
+    delayed_voice = os.path.join(temp_dir, "delayed_voice.mp3")
 
     # Step 1: Apply 1.5s delay + 3s fade-in to voiceover
     subprocess.run([
