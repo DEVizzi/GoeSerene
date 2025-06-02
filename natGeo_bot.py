@@ -549,7 +549,19 @@ def fetch_pexels_video(query="nature", min_duration=15):
         return None, None
 
     selected = random.choice(videos)
-    video_file = max(selected["video_files"], key=lambda x: x["width"])
+    video_files = selected["video_files"]
+
+    vertical_videos = [v for v in video_files if v["height"] > v["width"]]
+    horizontal_videos = [v for v in video_files if v["width"] >= v["height"]]
+
+    if vertical_videos:
+        # Prefer highest resolution vertical video
+        video_file = max(vertical_videos, key=lambda x: x["height"])
+        print("📱 Using vertical video (portrait mode)")
+    else:
+        video_file = max(horizontal_videos, key=lambda x: x["width"])
+        print("🖥️ Using horizontal video (landscape mode)")
+
     video_url = video_file["link"]
 
     metadata = {
@@ -585,7 +597,19 @@ def fetch_pixabay_video(query="nature", min_duration=15):
         return None, None
 
     selected = random.choice(hits)
-    video_url = selected["videos"]["large"]["url"]
+    video_list = list(selected["videos"].values())
+
+    vertical_videos = [v for v in video_list if v["height"] > v["width"]]
+    horizontal_videos = [v for v in video_list if v["width"] >= v["height"]]
+
+    if vertical_videos:
+        preferred = max(vertical_videos, key=lambda v: v["height"])
+        print("📱 Using vertical video (portrait mode)")
+    else:
+        preferred = max(horizontal_videos, key=lambda v: v["width"])
+        print("🖥️ Using horizontal video (landscape mode)")
+
+    video_url = preferred["url"]
 
     metadata = {
         "title": selected.get("tags", ""),  # often comma-separated
