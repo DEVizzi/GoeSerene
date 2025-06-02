@@ -84,4 +84,4 @@ jobs:
           git config user.name "GitHub Actions Bot"
           git config user.email "actions@github.com"
           git add history.txt
-          git diff --cached --quiet || git commit 
+          git diff --cached --quiet || git commit -m "🤖 Update history after auto-post"
