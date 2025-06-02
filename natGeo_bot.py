@@ -735,8 +735,12 @@ if __name__ == "__main__":
     caption = generate_caption_from_narration(narration,title)
     print(f"Generated caption: {caption}")    
 
-     # 1. Make Video
+    # 1. Make Video
     final_video_path = combine_video_with_music_and_voiceover(video_path, voiceover_path)
+
+    # ✅ Add validation here
+    if not final_video_path or not os.path.exists(final_video_path):
+        raise FileNotFoundError("❌ Final narrated video was not generated correctly.")
        
     # 2. Publish to Instagram
     post_reel(final_video_path, caption)
