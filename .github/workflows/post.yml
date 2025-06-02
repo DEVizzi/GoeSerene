@@ -76,9 +76,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg
   
-      - name: Restore service account key
-        run: echo "${{ secrets.GCP_KEY_JSON }}" > myvoiceoverbot-a0da14b71e20.json
-  
       - name: Run the NatGeo cinematic bot
         run: python natGeo_bot.py
   
