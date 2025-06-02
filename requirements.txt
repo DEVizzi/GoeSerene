@@ -4,5 +4,8 @@ google-generativeai
 instagrapi
 python-dotenv
 requests
-moviepy
-imageio-ffmpeg      # optional but recommended
+pydub
+google-api-python-client
+google-auth
+google-auth-oauthlib
+tweepy

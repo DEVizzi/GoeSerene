@@ -2,15 +2,26 @@ name: Automated Instagram Plant Post
 
 on:
   schedule:
-    - cron: '0 6 * * *'  # Runs daily at 6:00 AM UTC
+    - cron: '*/10 * * * *'  # every 10 minutes
   workflow_dispatch:
 
 jobs:
   post:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v3
+
+      - name: Cache Instagram Session
+        id: cache-session
+        uses: actions/cache@v4
+        with:
+          path: ig_session.pkl
+          key: ig-session-${{ env.INSTAGRAM_USERNAME }}
+          restore-keys: |
+            ig-session-${{ env.INSTAGRAM_USERNAME }}-
+      # :contentReference[oaicite:3]{index=3} :contentReference[oaicite:4]{index=4}.
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -24,8 +35,15 @@ jobs:
 
       - name: Run Automation Script
         env:
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          UNSPLASH_ACCESS_KEY: ${{ secrets.UNSPLASH_ACCESS_KEY }}
           INSTAGRAM_USERNAME: ${{ secrets.INSTAGRAM_USERNAME }}
           INSTAGRAM_PASSWORD: ${{ secrets.INSTAGRAM_PASSWORD }}
+          INSTAGRAM_SESSION_FILE: ig_session.pkl
         run: python main.py
+
+      - name: Save Instagram Session
+        if: steps.cache-session.outputs.cache-hit != 'true'
+        uses: actions/cache@v4
+        with:
+          path: ig_session.pkl
+          key: ig-session-${{ env.INSTAGRAM_USERNAME }}
+      # :contentReference[oaicite:5]{index=5}.
