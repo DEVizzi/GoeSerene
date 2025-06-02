@@ -1,49 +1,66 @@
-name: Automated Instagram Plant Post
+name: Auto Post Cinematic Nature Video
 
 on:
+  push:
+    branches: [main]
+
+  workflow_dispatch:  # manual trigger
+
   schedule:
-    - cron: '*/10 * * * *'  # every 10 minutes
-  workflow_dispatch:
+    # Best global viewer times for Instagram Reels & YouTube Shorts
+    - cron: "0 8 * * *"   # 08:00 UTC
+    - cron: "0 14 * * *"  # 14:00 UTC
+    - cron: "0 19 * * *"  # 19:00 UTC
 
 jobs:
-  post:
+  post-nature-video:
     runs-on: ubuntu-latest
 
+    env:
+      IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+      IG_USER_ID: ${{ secrets.IG_USER_ID }}
+      TWITTER_API_KEY: ${{ secrets.TWITTER_API_KEY }}
+      TWITTER_API_SECRET: ${{ secrets.TWITTER_API_SECRET }}
+      TWITTER_ACCESS_TOKEN: ${{ secrets.TWITTER_ACCESS_TOKEN }}
+      TWITTER_ACCESS_TOKEN_SECRET: ${{ secrets.TWITTER_ACCESS_TOKEN_SECRET }}
+      TWITTER_BEARER_TOKEN: ${{ secrets.TWITTER_BEARER_TOKEN }}
+      PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+      PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+      COVERR_API_URL: ${{ secrets.COVERR_API_URL }}
+      COVERR_API_KEY: ${{ secrets.COVERR_API_KEY }}
+      GOOGLE_APPLICATION_CREDENTIALS: myvoiceoverbot-a0da14b71e20.json
+      YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+      YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+      YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v3
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      with:
+        persist-credentials: true  # needed for committing later
 
-      - name: Cache Instagram Session
-        id: cache-session
-        uses: actions/cache@v4
-        with:
-          path: ig_session.pkl
-          key: ig-session-${{ env.INSTAGRAM_USERNAME }}
-          restore-keys: |
-            ig-session-${{ env.INSTAGRAM_USERNAME }}-
-      # :contentReference[oaicite:3]{index=3} :contentReference[oaicite:4]{index=4}.
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.10
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.10'
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg
 
-      - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+    - name: Restore service account key
+      run: echo "${{ secrets.GCP_KEY_JSON }}" > myvoiceoverbot-a0da14b71e20.json
 
-      - name: Run Automation Script
-        env:
-          INSTAGRAM_USERNAME: ${{ secrets.INSTAGRAM_USERNAME }}
-          INSTAGRAM_PASSWORD: ${{ secrets.INSTAGRAM_PASSWORD }}
-          INSTAGRAM_SESSION_FILE: ig_session.pkl
-        run: python main.py
+    - name: Run the NatGeo cinematic bot
+      run: python natGeo_bot.py
 
-      - name: Save Instagram Session
-        if: steps.cache-session.outputs.cache-hit != 'true'
-        uses: actions/cache@v4
-        with:
-          path: ig_session.pkl
-          key: ig-session-${{ env.INSTAGRAM_USERNAME }}
-      # :contentReference[oaicite:5]{index=5}.
+    - name: Commit updated history file (if any)
+      run: |
+        git config user.name "GitHub Actions Bot"
+        git config user.email "actions@github.com"
+        git add history.txt
+        git diff --cached --quiet || git commit -m "🤖 Update history after auto-post"
+        git push
