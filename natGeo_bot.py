@@ -180,8 +180,9 @@ def combine_video_with_music_and_voiceover(video_path: str, voiceover_path: str)
     if include_video_audio:
         # Inputs: 0 = video, 1 = music, 2 = voiceover
         filter_complex = (
+            "[0:a]volume=0.75[vid];"
             "[1:a]volume=0.35[music];"
-            "[0:a][music]amix=inputs=2:duration=longest[bg];"
+            "[vid][music]amix=inputs=2:duration=longest[bg];"
             "[bg][2:a]amix=inputs=2:duration=first[out]"
         )
         inputs = [video_path, music_path, delayed_voice]
@@ -526,54 +527,55 @@ Return only the title. No HTML. No Markdown. No quotation marks.
 
 
 def fetch_pexels_video(query="nature", min_duration=15):
-    headers = {
-        "Authorization": PEXELS_API_KEY
-    }
-    params = {
-        "query": query,
-        "per_page": 30
-    }
+    headers = {"Authorization": PEXELS_API_KEY}
+    params = {"query": query, "per_page": 30}
     url = "https://api.pexels.com/videos/search"
     resp = requests.get(url, headers=headers, params=params)
+
     if resp.status_code != 200:
         print(f"Pexels error: {resp.status_code}")
         return None, None
 
-    videos = [
-        v for v in resp.json().get("videos", [])
-        if v["duration"] >= min_duration
-    ]
-
+    videos = [v for v in resp.json().get("videos", []) if v["duration"] >= min_duration]
     if not videos:
         print("No Pexels videos found ≥ 15 seconds.")
         return None, None
 
-    selected = random.choice(videos)
-    video_files = selected["video_files"]
+    best_video_file = None
+    best_video_meta = None
+    best_quality = 0
 
-    vertical_videos = [v for v in video_files if v["height"] > v["width"]]
-    horizontal_videos = [v for v in video_files if v["width"] >= v["height"]]
+    for video in videos:
+        for vf in video["video_files"]:
+            resolution = vf["width"] * vf["height"]
+            is_vertical = vf["height"] > vf["width"]
 
-    if vertical_videos:
-        # Prefer highest resolution vertical video
-        video_file = max(vertical_videos, key=lambda x: x["height"])
-        print("📱 Using vertical video (portrait mode)")
-    else:
-        video_file = max(horizontal_videos, key=lambda x: x["width"])
-        print("🖥️ Using horizontal video (landscape mode)")
+            # Higher preference if vertical; HD quality (720p or above)
+            if resolution >= 1280 * 720:
+                score = resolution + (1e6 if is_vertical else 0)
+                if score > best_quality:
+                    best_quality = score
+                    best_video_file = vf
+                    best_video_meta = video
 
-    video_url = video_file["link"]
+    if not best_video_file:
+        print("No suitable HD video found.")
+        return None, None
+
+    print("📱 Using vertical video (portrait mode)" if best_video_file["height"] > best_video_file["width"]
+          else "🖥️ Using horizontal video (landscape mode)")
 
     metadata = {
-        "title": selected.get("url", "").split("/")[-1].replace("-", " ").replace("/", ""),
-        "duration": selected.get("duration"),
-        "width": selected.get("width"),
-        "height": selected.get("height"),
-        "tags": [tag["title"] for tag in selected.get("tags", [])] if "tags" in selected else [],
-        "original_url": selected.get("url")
+        "title": best_video_meta.get("url", "").split("/")[-1].replace("-", " ").replace("/", ""),
+        "duration": best_video_meta.get("duration"),
+        "width": best_video_meta.get("width"),
+        "height": best_video_meta.get("height"),
+        "tags": [tag["title"] for tag in best_video_meta.get("tags", [])] if "tags" in best_video_meta else [],
+        "original_url": best_video_meta.get("url")
     }
 
-    return video_url, metadata
+    return best_video_file["link"], metadata
+
 
 def fetch_pixabay_video(query="nature", min_duration=15):
     params = {
@@ -584,43 +586,50 @@ def fetch_pixabay_video(query="nature", min_duration=15):
     }
     url = "https://pixabay.com/api/videos/"
     resp = requests.get(url, params=params)
+
     if resp.status_code != 200:
         print(f"Pixabay error: {resp.status_code}")
         return None, None
 
-    hits = [
-        v for v in resp.json().get("hits", [])
-        if v["duration"] >= min_duration
-    ]
+    hits = [v for v in resp.json().get("hits", []) if v["duration"] >= min_duration]
     if not hits:
         print("No Pixabay videos found ≥ 15 seconds.")
         return None, None
 
-    selected = random.choice(hits)
-    video_list = list(selected["videos"].values())
+    best_video_file = None
+    best_video_meta = None
+    best_quality = 0
 
-    vertical_videos = [v for v in video_list if v["height"] > v["width"]]
-    horizontal_videos = [v for v in video_list if v["width"] >= v["height"]]
+    for video in hits:
+        for _, vf in video["videos"].items():
+            resolution = vf["width"] * vf["height"]
+            is_vertical = vf["height"] > vf["width"]
 
-    if vertical_videos:
-        preferred = max(vertical_videos, key=lambda v: v["height"])
-        print("📱 Using vertical video (portrait mode)")
-    else:
-        preferred = max(horizontal_videos, key=lambda v: v["width"])
-        print("🖥️ Using horizontal video (landscape mode)")
+            if resolution >= 1280 * 720:
+                score = resolution + (1e6 if is_vertical else 0)
+                if score > best_quality:
+                    best_quality = score
+                    best_video_file = vf
+                    best_video_meta = video
 
-    video_url = preferred["url"]
+    if not best_video_file:
+        print("No suitable HD video found.")
+        return None, None
+
+    print("📱 Using vertical video (portrait mode)" if best_video_file["height"] > best_video_file["width"]
+          else "🖥️ Using horizontal video (landscape mode)")
 
     metadata = {
-        "title": selected.get("tags", ""),  # often comma-separated
-        "duration": selected.get("duration"),
-        "width": selected["videos"]["large"].get("width"),
-        "height": selected["videos"]["large"].get("height"),
-        "tags": [t.strip() for t in selected.get("tags", "").split(",")],
-        "original_url": selected.get("pageURL")
+        "title": best_video_meta.get("tags", ""),
+        "duration": best_video_meta.get("duration"),
+        "width": best_video_file["width"],
+        "height": best_video_file["height"],
+        "tags": [t.strip() for t in best_video_meta.get("tags", "").split(",")],
+        "original_url": best_video_meta.get("pageURL")
     }
 
-    return video_url, metadata
+    return best_video_file["url"], metadata
+
 
 '''
 def backup_videos():
