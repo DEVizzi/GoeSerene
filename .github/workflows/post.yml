@@ -2,43 +2,30 @@ name: Auto NatGeo Reel Bot
 
 on:
   schedule:
-    # MONDAY (targeting US mornings, Europe midday, Asia evenings)
-    # - cron: "30 1 * * 1"  # 7:00 AM IST
-# - cron: "30 7 * * 1"  # 1:00 PM IST
-# - cron: "30 14 * * 1" # 8:00 PM IST
+    # Monday to Sunday — 9:30 AM IST and 7:00 PM IST
+    - cron: "0 4 * * 1"   # 9:30 AM IST Monday
+    - cron: "30 13 * * 1" # 7:00 PM IST Monday
 
-# Tuesday
-# - cron: "30 2 * * 2"  # 8:00 AM IST
-# - cron: "30 8 * * 2"  # 2:00 PM IST
-# - cron: "30 15 * * 2" # 9:00 PM IST
+    - cron: "0 4 * * 2"   # 9:30 AM IST Tuesday
+    - cron: "30 13 * * 2" # 7:00 PM IST Tuesday
 
-# Wednesday
-# - cron: "30 1 * * 3"  # 7:00 AM IST
-# - cron: "30 7 * * 3"  # 1:00 PM IST
-# - cron: "30 14 * * 3" # 8:00 PM IST
+    - cron: "0 4 * * 3"   # 9:30 AM IST Wednesday
+    - cron: "30 13 * * 3" # 7:00 PM IST Wednesday
 
-# Thursday
-# - cron: "30 2 * * 4"  # 8:00 AM IST
-# - cron: "30 8 * * 4"  # 2:00 PM IST
-# - cron: "30 15 * * 4" # 9:00 PM IST
+    - cron: "0 4 * * 4"   # 9:30 AM IST Thursday
+    - cron: "30 13 * * 4" # 7:00 PM IST Thursday
 
-# Friday
-# - cron: "30 1 * * 5"  # 7:00 AM IST
-# - cron: "30 7 * * 5"  # 1:00 PM IST
-# - cron: "30 14 * * 5" # 8:00 PM IST
+    - cron: "0 4 * * 5"   # 9:30 AM IST Friday
+    - cron: "30 13 * * 5" # 7:00 PM IST Friday
 
-# Saturday
-# - cron: "30 3 * * 6"  # 9:00 AM IST
-# - cron: "30 9 * * 6"  # 3:00 PM IST
-# - cron: "30 16 * * 6" # 10:00 PM IST
+    - cron: "0 4 * * 6"   # 9:30 AM IST Saturday
+    - cron: "30 13 * * 6" # 7:00 PM IST Saturday
 
-# Sunday
-# - cron: "30 2 * * 0"  # 8:00 AM IST
-# - cron: "30 8 * * 0"  # 2:00 PM IST
-# - cron: "30 15 * * 0" # 9:00 PM IST
+    - cron: "0 4 * * 0"   # 9:30 AM IST Sunday
+    - cron: "30 13 * * 0" # 7:00 PM IST Sunday
 
   workflow_dispatch:
-
+  
 jobs:
   poetrybot:
     runs-on: ubuntu-latest
