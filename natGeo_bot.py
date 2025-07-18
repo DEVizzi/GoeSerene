@@ -40,7 +40,7 @@ COVERR_API_KEY=os.getenv("COVERR_API_KEY")
 
 # Initialize Gemini Chat Model with a supported model name
 llm = ChatGoogleGenerativeAI(
-    model="models/gemini-1.5-flash",
+    model="models/gemini-2.5-flash",
     temperature=0.7
 )
 
