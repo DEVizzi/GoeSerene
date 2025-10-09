@@ -3,26 +3,26 @@ name: Auto NatGeo Reel Bot
 on:
   schedule:
     # Monday to Sunday — 9:30 AM IST and 7:00 PM IST
-    - cron: "0 4 * * 1"   # 9:30 AM IST Monday
-    - cron: "30 13 * * 1" # 7:00 PM IST Monday
+    #- cron: "0 4 * * 1"   # 9:30 AM IST Monday
+    #- cron: "30 13 * * 1" # 7:00 PM IST Monday
 
-    - cron: "0 4 * * 2"   # 9:30 AM IST Tuesday
-    - cron: "30 13 * * 2" # 7:00 PM IST Tuesday
+    #- cron: "0 4 * * 2"   # 9:30 AM IST Tuesday
+    #- cron: "30 13 * * 2" # 7:00 PM IST Tuesday
 
-    - cron: "0 4 * * 3"   # 9:30 AM IST Wednesday
-    - cron: "30 13 * * 3" # 7:00 PM IST Wednesday
+    #- cron: "0 4 * * 3"   # 9:30 AM IST Wednesday
+    #- cron: "30 13 * * 3" # 7:00 PM IST Wednesday
 
-    - cron: "0 4 * * 4"   # 9:30 AM IST Thursday
-    - cron: "30 13 * * 4" # 7:00 PM IST Thursday
+    #- cron: "0 4 * * 4"   # 9:30 AM IST Thursday
+    #- cron: "30 13 * * 4" # 7:00 PM IST Thursday
 
-    - cron: "0 4 * * 5"   # 9:30 AM IST Friday
-    - cron: "30 13 * * 5" # 7:00 PM IST Friday
+    #- cron: "0 4 * * 5"   # 9:30 AM IST Friday
+    #- cron: "30 13 * * 5" # 7:00 PM IST Friday
 
-    - cron: "0 4 * * 6"   # 9:30 AM IST Saturday
-    - cron: "30 13 * * 6" # 7:00 PM IST Saturday
+    #- cron: "0 4 * * 6"   # 9:30 AM IST Saturday
+    #- cron: "30 13 * * 6" # 7:00 PM IST Saturday
 
-    - cron: "0 4 * * 0"   # 9:30 AM IST Sunday
-    - cron: "30 13 * * 0" # 7:00 PM IST Sunday
+    #- cron: "0 4 * * 0"   # 9:30 AM IST Sunday
+    #- cron: "30 13 * * 0" # 7:00 PM IST Sunday
 
   workflow_dispatch:
   
