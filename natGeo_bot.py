@@ -17,8 +17,9 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
 from datetime import datetime
+import asyncio
 import re
-from google.cloud import texttospeech
+import edge_tts
 import tweepy
 import tempfile
 from pydub.utils import mediainfo
@@ -35,10 +36,6 @@ TOKEN_URI = "https://oauth2.googleapis.com/token"
 # Instagram Graph API credentials
 IG_ACCESS_TOKEN = os.getenv("IG_ACCESS_TOKEN")
 IG_USER_ID = os.getenv("IG_USER_ID")
-
-default_creds_path = os.path.join(BASE_DIR, "myvoiceoverbot-a0da14b71e20.json")
-if not os.getenv("GOOGLE_APPLICATION_CREDENTIALS") and os.path.exists(default_creds_path):
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = default_creds_path
 
 BASE_URL = "https://graph.facebook.com/v19.0"
 PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
@@ -130,11 +127,12 @@ NATURE_QUERIES = [
 
 
 voice_names = [
-    "en-US-Chirp3-HD-Algieba",
-    "en-US-Chirp3-HD-Aoede",
-    "en-US-Chirp3-HD-Gacrux",
-    "en-US-Chirp3-HD-Iapetus",
-    "en-US-Chirp3-HD-Sulafat",
+    "en-US-ChristopherNeural",
+    "en-US-GuyNeural",
+    "en-US-EricNeural",
+    "en-US-AndrewNeural",
+    "en-US-BrianNeural",
+    "en-GB-RyanNeural",
 ]
 
 
@@ -754,8 +752,6 @@ def download_video(video_url: str, output_dir="videos") -> str:
 
 
 def synthesize_text(text, output_path="output.mp3", selected_voice=None):
-    client = texttospeech.TextToSpeechClient()
-
     # Clean text to avoid unwanted spoken characters
     clean_text = clean_text_for_tts(text)
 
@@ -763,34 +759,18 @@ def synthesize_text(text, output_path="output.mp3", selected_voice=None):
     if not selected_voice:
         selected_voice = random.choice(voice_names)
 
-    input_text = texttospeech.SynthesisInput(text=clean_text)
-
-    voice = texttospeech.VoiceSelectionParams(
-        language_code="en-US",
-        name=selected_voice
-    )
-
-    # Chirp3-HD voices do not support speaking_rate or effects_profile_id
-    if "Chirp3" in selected_voice:
-        audio_config = texttospeech.AudioConfig(
-            audio_encoding=texttospeech.AudioEncoding.MP3
-        )
-    else:
-        audio_config = texttospeech.AudioConfig(
-            audio_encoding=texttospeech.AudioEncoding.MP3,
-            speaking_rate=1.1,
-            effects_profile_id=["handset-class-device"]
-        )
-
-    response = client.synthesize_speech(
-        input=input_text, voice=voice, audio_config=audio_config
-    )
-
-    with open(output_path, "wb") as out:
-        out.write(response.audio_content)
-        print(f"✅ Audio content written to {output_path} using voice: {selected_voice}")
-
-    return output_path
+    try:
+        communicate = edge_tts.Communicate(clean_text, selected_voice)
+        asyncio.run(communicate.save(output_path))
+        print(f"✅ Audio content written to {output_path} using Edge Neural TTS voice: {selected_voice}")
+        return output_path
+    except Exception as e:
+        print(f"⚠️ Edge TTS failed ({e}), falling back to gTTS...")
+        from gtts import gTTS
+        tts = gTTS(text=clean_text, lang="en", tld="co.uk")
+        tts.save(output_path)
+        print(f"✅ Audio content written to {output_path} using gTTS fallback.")
+        return output_path
 
 
 def fetch_unique_nature_video(attempts=5):

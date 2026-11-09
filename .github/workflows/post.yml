@@ -46,7 +46,6 @@ jobs:
       PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
       COVERR_API_URL: ${{ secrets.COVERR_API_URL }}
       COVERR_API_KEY: ${{ secrets.COVERR_API_KEY }}
-      GOOGLE_APPLICATION_CREDENTIALS: myvoiceoverbot-a0da14b71e20.json
       YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
       YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
       YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
@@ -68,14 +67,6 @@ jobs:
           pip install -r requirements.txt
           sudo apt-get update
           sudo apt-get install -y ffmpeg
-
-      - name: Restore service account key (if secret configured)
-        env:
-          GCP_KEY_JSON: ${{ secrets.GCP_KEY_JSON }}
-        run: |
-          if [ -n "$GCP_KEY_JSON" ]; then
-            echo "$GCP_KEY_JSON" > myvoiceoverbot-a0da14b71e20.json
-          fi
 
       - name: Run the NatGeo cinematic bot
         run: python natGeo_bot.py
