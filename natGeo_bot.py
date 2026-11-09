@@ -360,6 +360,90 @@ def upload_video_to_youtube(video_path: str, title: str, description: str, tags:
 
 
 #*****************************INSTAGRAM***BEGIN***********************************
+def _persist_env_var(key: str, value: str) -> None:
+    """Updates a key=value entry in the local .env file if it exists."""
+    env_file = os.path.join(BASE_DIR, ".env")
+    if not os.path.exists(env_file):
+        return
+    with open(env_file, "r", encoding="utf-8") as f:
+        lines = f.read().splitlines()
+    updated = False
+    for i, line in enumerate(lines):
+        if line.startswith(f"{key}="):
+            lines[i] = f"{key}={value}"
+            updated = True
+            break
+    if not updated:
+        lines.append(f"{key}={value}")
+    with open(env_file, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def ensure_long_lived_ig_token() -> str:
+    """
+    Checks the current IG_ACCESS_TOKEN expiration via /debug_token.
+    - If it is a short-lived token or has < 14 days remaining (and FB_APP_SECRET is set),
+      automatically exchanges it for a 60-day long-lived token (and permanent Page token if available)
+      and saves the refreshed token to .env.
+    """
+    global IG_ACCESS_TOKEN
+    if not IG_ACCESS_TOKEN:
+        return ""
+
+    fb_app_id = os.getenv("FB_APP_ID", "867332745608249")
+    fb_app_secret = os.getenv("FB_APP_SECRET", "")
+
+    try:
+        dbg_resp = requests.get(
+            f"{BASE_URL}/debug_token",
+            params={"input_token": IG_ACCESS_TOKEN, "access_token": IG_ACCESS_TOKEN},
+            timeout=HTTP_TIMEOUT,
+        ).json()
+        data = dbg_resp.get("data", {})
+        expires_at = data.get("expires_at", 0)
+        remaining_days = (expires_at - time.time()) / 86400 if expires_at else float("inf")
+
+        if expires_at == 0:
+            print("🔒 Instagram token is a non-expiring token.")
+            return IG_ACCESS_TOKEN
+
+        print(f"🔑 Instagram token expires in {remaining_days:.1f} days.")
+        if remaining_days < 14 and fb_app_secret:
+            print("🔄 Automatically exchanging/refreshing Instagram token for a new 60-day token...")
+            ex_resp = requests.get(
+                f"{BASE_URL}/oauth/access_token",
+                params={
+                    "grant_type": "fb_exchange_token",
+                    "client_id": fb_app_id,
+                    "client_secret": fb_app_secret,
+                    "fb_exchange_token": IG_ACCESS_TOKEN,
+                },
+                timeout=HTTP_TIMEOUT,
+            ).json()
+            new_token = ex_resp.get("access_token")
+            if new_token:
+                # Also check if we can derive a permanent Page token from the long-lived user token
+                pages_resp = requests.get(
+                    f"{BASE_URL}/me/accounts",
+                    params={"fields": "id,name,access_token,instagram_business_account", "access_token": new_token},
+                    timeout=HTTP_TIMEOUT,
+                ).json()
+                for page in pages_resp.get("data", []):
+                    ig_acct = page.get("instagram_business_account", {}).get("id")
+                    if ig_acct == IG_USER_ID and page.get("access_token"):
+                        new_token = page["access_token"]
+                        print("✅ Obtained permanent Page/Instagram access token via /me/accounts!")
+                        break
+                IG_ACCESS_TOKEN = new_token
+                os.environ["IG_ACCESS_TOKEN"] = new_token
+                _persist_env_var("IG_ACCESS_TOKEN", new_token)
+                print("✅ Refreshed IG_ACCESS_TOKEN saved to .env.")
+    except Exception as e:
+        print(f"⚠️ Instagram token check/refresh warning: {e}")
+
+    return IG_ACCESS_TOKEN
+
+
 def init_reel_upload(caption: str, cover_url: str = None) -> tuple:
     endpoint = f"{BASE_URL}/{IG_USER_ID}/media"
     params = {
@@ -438,6 +522,7 @@ def get_media_permalink(media_id: str) -> str:
 
 
 def post_reel(video_path: str, caption: str, cover_url: str = None) -> tuple:
+    ensure_long_lived_ig_token()
     container_id, upload_url = init_reel_upload(caption, cover_url)
     upload_reel_video(upload_url, video_path)
     wait_for_media_container(container_id)
