@@ -1,4 +1,5 @@
 .env
+.venv/
 myvoiceoverbot-*.json
 videos/
 voiceover.mp3

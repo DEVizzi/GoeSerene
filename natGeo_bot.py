@@ -5,12 +5,6 @@ import random
 import requests
 import subprocess
 from dotenv import load_dotenv
-from langchain_google_genai import ChatGoogleGenerativeAI
-try:
-    from langchain_core.messages import SystemMessage, HumanMessage
-except ImportError:
-    from langchain.schema import SystemMessage, HumanMessage
-
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
@@ -45,9 +39,54 @@ COVERR_API_KEY = os.getenv("COVERR_API_KEY")
 
 HTTP_TIMEOUT = 60
 
-# Initialize Gemini Chat Model with a supported model name
+
+class SystemMessage:
+    def __init__(self, content: str):
+        self.content = content
+
+
+class HumanMessage:
+    def __init__(self, content: str):
+        self.content = content
+
+
+class _GeminiResponse:
+    def __init__(self, content: str):
+        self.content = content
+
+
+class ChatGoogleGenerativeAI:
+    def __init__(self, model: str = "models/gemini-flash-lite-latest", temperature: float = 0.7):
+        self.model = model if model.startswith("models/") else f"models/{model}"
+        self.temperature = temperature
+
+    def invoke(self, messages: list) -> _GeminiResponse:
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            raise ValueError("GOOGLE_API_KEY environment variable is not set.")
+        sys_parts = [m.content for m in messages if isinstance(m, SystemMessage)]
+        user_parts = [m.content for m in messages if not isinstance(m, SystemMessage)]
+        payload = {
+            "contents": [{"role": "user", "parts": [{"text": "\n\n".join(user_parts)}]}],
+            "generationConfig": {"temperature": self.temperature},
+        }
+        if sys_parts:
+            payload["systemInstruction"] = {"parts": [{"text": "\n".join(sys_parts)}]}
+        for candidate_model in (self.model, "models/gemini-3.1-flash-lite", "models/gemini-flash-latest"):
+            url = f"https://generativelanguage.googleapis.com/v1beta/{candidate_model}:generateContent?key={api_key}"
+            resp = requests.post(url, json=payload, timeout=HTTP_TIMEOUT)
+            if resp.status_code == 404:
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            text = data["candidates"][0]["content"]["parts"][0]["text"]
+            return _GeminiResponse(text)
+        resp.raise_for_status()
+
+
+# Initialize Gemini Chat Model
 llm = ChatGoogleGenerativeAI(
-    model="models/gemini-2.5-flash",
+    model="models/gemini-flash-lite-latest",
     temperature=0.7
 )
 
@@ -166,15 +205,12 @@ def combine_video_with_music_and_voiceover(video_path: str, voiceover_path: str)
         delayed_voice
     ], check=True)
 
-    # Step 2: Detect if input video has audio
-    has_audio = subprocess.run([
-        "ffprobe", "-v", "error",
-        "-select_streams", "a",
-        "-show_entries", "stream=codec_type",
-        "-of", "default=nw=1", video_path
-    ], capture_output=True, text=True)
-
-    include_video_audio = "codec_type=audio" in has_audio.stdout
+    # Step 2: Detect if input video has audio using ffmpeg
+    probe = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-i", video_path],
+        capture_output=True, text=True
+    )
+    include_video_audio = "Audio:" in (probe.stderr or "")
 
     # Step 3: Prepare filter_complex (normalize=0 prevents volume drops/jumps when voiceover ends)
     if include_video_audio:
