@@ -1,10 +1,15 @@
 import os
+import sys
+import time
 import random
 import requests
 import subprocess
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.schema import SystemMessage, HumanMessage
+try:
+    from langchain_core.messages import SystemMessage, HumanMessage
+except ImportError:
+    from langchain.schema import SystemMessage, HumanMessage
 
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
@@ -17,26 +22,31 @@ from google.cloud import texttospeech
 import tweepy
 import tempfile
 from pydub.utils import mediainfo
-from pydub import AudioSegment
 
 
 # Load environment variables
 load_dotenv()
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # YouTube OAuth scope and token endpoint
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 TOKEN_URI = "https://oauth2.googleapis.com/token"
 # Instagram Graph API credentials
-IG_ACCESS_TOKEN=os.getenv("IG_ACCESS_TOKEN")
-IG_USER_ID=os.getenv("IG_USER_ID")
+IG_ACCESS_TOKEN = os.getenv("IG_ACCESS_TOKEN")
+IG_USER_ID = os.getenv("IG_USER_ID")
 
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "myvoiceoverbot-a0da14b71e20.json"
+default_creds_path = os.path.join(BASE_DIR, "myvoiceoverbot-a0da14b71e20.json")
+if not os.getenv("GOOGLE_APPLICATION_CREDENTIALS") and os.path.exists(default_creds_path):
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = default_creds_path
 
-BASE_URL = "https://graph.facebook.com/v17.0"
+BASE_URL = "https://graph.facebook.com/v19.0"
 PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
 PIXABAY_API_KEY = os.getenv("PIXABAY_API_KEY")
 COVERR_API_URL = os.getenv("COVERR_API_URL")
-COVERR_API_KEY=os.getenv("COVERR_API_KEY")
+COVERR_API_KEY = os.getenv("COVERR_API_KEY")
+
+HTTP_TIMEOUT = 60
 
 # Initialize Gemini Chat Model with a supported model name
 llm = ChatGoogleGenerativeAI(
@@ -56,7 +66,7 @@ NATURE_QUERIES = [
 
     # Wildlife & Animals
     "slow motion butterflies", "birds flying over cliffs", "wild horses running", "elephants at watering hole",
-    "underwater sea turtles", "humpback whales breaching", "lions resting in savannah", 
+    "underwater sea turtles", "humpback whales breaching", "lions resting in savannah",
     "monkeys swinging in trees", "eagles soaring over peaks", "penguins walking on ice",
     "fox in snowy forest", "timelapse of ants", "deer in misty forest", "owls in moonlight",
 
@@ -69,17 +79,17 @@ NATURE_QUERIES = [
     "winter forest silence", "first frost in morning light", "fall colors from above",
 
     # Water & Weather
-    "ocean waves crashing on rocks", "river stream with rocks", "storm clouds rolling in", 
+    "ocean waves crashing on rocks", "river stream with rocks", "storm clouds rolling in",
     "thunderstorm sky timelapse", "tide pools with sea life", "rain drops on leaves close-up",
     "rippling lake at sunrise", "flooded forest reflection", "underwater coral reef",
 
     # Macro & Close-Up
-    "close-up raindrops on leaves", "bees pollinating flowers", "snail crawling on moss", 
+    "close-up raindrops on leaves", "bees pollinating flowers", "snail crawling on moss",
     "dew on spider web", "macro of flower opening", "insects on wildflowers", "butterfly on leaf macro",
 
     # Forest & Flora
-    "foggy morning forest", "sun rays breaking through trees", "lush jungle greenery", 
-    "pine forest in snow", "moss-covered rocks in forest", "blossoming cherry trees", 
+    "foggy morning forest", "sun rays breaking through trees", "lush jungle greenery",
+    "pine forest in snow", "moss-covered rocks in forest", "blossoming cherry trees",
     "dense bamboo forest", "wildflowers in alpine meadow", "ferns in rainforest floor",
 
     # Unique Environments
@@ -120,39 +130,31 @@ NATURE_QUERIES = [
 
 
 voice_names = [
-    #"en-US-Chirp-HD-D",
-    #"en-US-Chirp-HD-F",
-    "en-US-Chirp3-HD-Algieba",
     "en-US-Chirp3-HD-Algieba",
     "en-US-Chirp3-HD-Aoede",
-    #"en-US-Chirp3-HD-Erinome",
     "en-US-Chirp3-HD-Gacrux",
     "en-US-Chirp3-HD-Iapetus",
-    #"en-US-Chirp3-HD-Laomedeia",
-    #"en-US-Chirp3-HD-Pulcherrima",
-    #"en-US-Chirp3-HD-Rasalgethi",
-    #"en-US-Chirp3-HD-Sadaltager",
     "en-US-Chirp3-HD-Sulafat",
-    #"en-US-Chirp3-HD-Vindemiatrix",
 ]
 
 
 def get_audio_duration(audio_path: str) -> float:
     """Returns the duration of an audio file in seconds."""
     info = mediainfo(audio_path)
-    return float(info['duration'])
+    return float(info["duration"])
 
 
 def combine_video_with_music_and_voiceover(video_path: str, voiceover_path: str) -> str:
     """
     Combines the given video with soft background music and a voiceover.
     - If the video has no audio, only music and voiceover are mixed.
-    - The voiceover is delayed slightly and mixed over background music at 50% volume.
-    - The voiceover is time-aligned with the video duration (preprocessed before).
+    - The voiceover is delayed slightly and mixed over background music.
     """
     output_path = video_path.replace(".mp4", "_final_narrated.mp4")
-    music_dir = "music"
+    music_dir = os.path.join(BASE_DIR, "music")
     music_files = [f for f in os.listdir(music_dir) if f.endswith(".mp3")]
+    if not music_files:
+        raise FileNotFoundError(f"No .mp3 files found in {music_dir}")
     music_path = os.path.join(music_dir, random.choice(music_files))
 
     temp_dir = tempfile.gettempdir()
@@ -173,24 +175,24 @@ def combine_video_with_music_and_voiceover(video_path: str, voiceover_path: str)
         "-show_entries", "stream=codec_type",
         "-of", "default=nw=1", video_path
     ], capture_output=True, text=True)
-    
+
     include_video_audio = "codec_type=audio" in has_audio.stdout
 
-    # Step 3: Prepare filter_complex
+    # Step 3: Prepare filter_complex (normalize=0 prevents volume drops/jumps when voiceover ends)
     if include_video_audio:
         # Inputs: 0 = video, 1 = music, 2 = voiceover
         filter_complex = (
             "[0:a]volume=0.75[vid];"
             "[1:a]volume=0.35[music];"
-            "[vid][music]amix=inputs=2:duration=longest[bg];"
-            "[bg][2:a]amix=inputs=2:duration=first[out]"
+            "[vid][music]amix=inputs=2:duration=first:normalize=0[bg];"
+            "[bg][2:a]amix=inputs=2:duration=first:normalize=0[out]"
         )
         inputs = [video_path, music_path, delayed_voice]
     else:
         # Inputs: 0 = video, 1 = voiceover, 2 = music
         filter_complex = (
             "[2:a]volume=0.35[music];"
-            "[music][1:a]amix=inputs=2:duration=first[out]"
+            "[music][1:a]amix=inputs=2:duration=first:normalize=0[out]"
         )
         inputs = [video_path, delayed_voice, music_path]
 
@@ -200,8 +202,8 @@ def combine_video_with_music_and_voiceover(video_path: str, voiceover_path: str)
         "-i", inputs[1],  # music or delayed voiceover
         "-i", inputs[2],  # voiceover or music
         "-filter_complex",
-        f"{filter_complex};[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1[v]",
-        "-map", "[v]",       # ✅ only the scaled video stream
+        f"{filter_complex};[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1[v]",
+        "-map", "[v]",       # ✅ only the scaled/cropped 9:16 video stream
         "-map", "[out]",     # ✅ final mixed audio stream
         "-c:v", "libx264",
         "-preset", "fast",
@@ -221,6 +223,7 @@ def combine_video_with_music_and_voiceover(video_path: str, voiceover_path: str)
     print(f"✅ Final narrated video saved: {output_path}")
     return output_path
 
+
 def post_to_twitter_text_only(caption: str) -> str:
     """
     Post a text-only tweet using Twitter API v2 (Free tier compliant).
@@ -237,12 +240,11 @@ def post_to_twitter_text_only(caption: str) -> str:
         response = client.create_tweet(text=caption[:280])
         tweet_id = response.data["id"]
         return f"https://twitter.com/user/status/{tweet_id}"
-    
+
     except Exception as e:
         print(f"⚠️ Twitter text post failed: {e}")
         return ""
 
-        return ""
 
 def generate_tweet_from_video(poem: str, youtube_url: str = "", insta_url: str = ""):
     """
@@ -265,10 +267,12 @@ def generate_tweet_from_video(poem: str, youtube_url: str = "", insta_url: str =
 
     tweet_caption = f"{poem_clean}\n{cta_line}{base_links}"
     return tweet_caption
+
+
 #********************************Youtube Start************************************************************
 def authenticate_youtube():
     """
-    Authenticate to YouTube using refresh token flow. 
+    Authenticate to YouTube using refresh token flow.
     Requires env vars: YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET, YOUTUBE_REFRESH_TOKEN
     """
     creds = Credentials(
@@ -282,21 +286,22 @@ def authenticate_youtube():
     creds.refresh(Request())
     return build("youtube", "v3", credentials=creds)
 
+
 def upload_video_to_youtube(video_path: str, title: str, description: str, tags: list = None) -> str:
     """
     Upload a video to YouTube and return the video ID.
     """
     if not os.path.isfile(video_path):
         raise FileNotFoundError(f"Video not found: {video_path}")
-    
+
     title = title.strip().replace("\n", " ")[:100] or "Cinematic Poem"
 
     youtube = authenticate_youtube()
-    
+
     body = {
         "snippet": {
             "title": title,
-            "description": description, 
+            "description": description,
             "tags": tags or [],
             "categoryId": "22"
         },
@@ -315,13 +320,13 @@ def upload_video_to_youtube(video_path: str, title: str, description: str, tags:
         if status:
             print(f"📤 Upload progress: {int(status.progress() * 100)}%")
 
-    #print(f"✅ Uploaded to YouTube: https://youtu.be/{response['id']}")
     return response["id"]
 
 #********************************Youtube End**************************************************************
 
+
 #*****************************INSTAGRAM***BEGIN***********************************
-def init_reel_upload(caption: str, cover_url: str = None) -> (str, str):
+def init_reel_upload(caption: str, cover_url: str = None) -> tuple:
     endpoint = f"{BASE_URL}/{IG_USER_ID}/media"
     params = {
         "media_type": "REELS",
@@ -331,10 +336,11 @@ def init_reel_upload(caption: str, cover_url: str = None) -> (str, str):
     }
     if cover_url:
         params["cover_url"] = cover_url
-    resp = requests.post(endpoint, data=params).json()
+    resp = requests.post(endpoint, data=params, timeout=HTTP_TIMEOUT).json()
     if "id" not in resp or "uri" not in resp:
         raise RuntimeError(f"Error initializing reel upload: {resp}")
     return resp["id"], resp["uri"]
+
 
 def upload_reel_video(upload_url: str, video_path: str) -> None:
     file_size = os.path.getsize(video_path)
@@ -344,10 +350,35 @@ def upload_reel_video(upload_url: str, video_path: str) -> None:
         "file_size": str(file_size)
     }
     with open(video_path, "rb") as f:
-        resp = requests.post(upload_url, headers=headers, data=f)
-    data = resp.json() if resp.headers.get('Content-Type', '').startswith('application/json') else {}
+        resp = requests.post(upload_url, headers=headers, data=f, timeout=300)
+    data = resp.json() if resp.headers.get("Content-Type", "").startswith("application/json") else {}
     if not resp.ok or (data.get("success") is False):
         raise RuntimeError(f"Error uploading reel video: {data or resp.text}")
+
+
+def wait_for_media_container(container_id: str, max_wait_seconds: int = 180, poll_interval: int = 5) -> None:
+    """
+    Polls the Instagram Graph API container status until it is FINISHED processing.
+    Prevents Graph API error 9007 ('Media ID is not available') on publish.
+    """
+    endpoint = f"{BASE_URL}/{container_id}"
+    params = {
+        "fields": "status_code,status",
+        "access_token": IG_ACCESS_TOKEN
+    }
+    elapsed = 0
+    while elapsed < max_wait_seconds:
+        resp = requests.get(endpoint, params=params, timeout=HTTP_TIMEOUT).json()
+        status_code = resp.get("status_code")
+        print(f"⏳ Instagram container {container_id} status: {status_code or resp}")
+        if status_code == "FINISHED":
+            return
+        if status_code in ("ERROR", "EXPIRED"):
+            raise RuntimeError(f"Instagram media container processing failed: {resp}")
+        time.sleep(poll_interval)
+        elapsed += poll_interval
+    raise TimeoutError(f"Timed out waiting for Instagram container {container_id} to finish processing.")
+
 
 def publish_media_container(container_id: str) -> dict:
     endpoint = f"{BASE_URL}/{IG_USER_ID}/media_publish"
@@ -355,34 +386,55 @@ def publish_media_container(container_id: str) -> dict:
         "creation_id": container_id,
         "access_token": IG_ACCESS_TOKEN
     }
-    resp = requests.post(endpoint, data=params).json()
+    resp = requests.post(endpoint, data=params, timeout=HTTP_TIMEOUT).json()
     if "id" not in resp:
         raise RuntimeError(f"Error publishing media: {resp}")
     return resp
 
-def post_reel(video_path: str, caption: str, cover_url: str = None) -> str:
+
+def get_media_permalink(media_id: str) -> str:
+    """Fetches the public Instagram permalink for a published media ID."""
+    try:
+        endpoint = f"{BASE_URL}/{media_id}"
+        params = {"fields": "permalink", "access_token": IG_ACCESS_TOKEN}
+        resp = requests.get(endpoint, params=params, timeout=HTTP_TIMEOUT).json()
+        return resp.get("permalink", "")
+    except Exception:
+        return ""
+
+
+def post_reel(video_path: str, caption: str, cover_url: str = None) -> tuple:
     container_id, upload_url = init_reel_upload(caption, cover_url)
     upload_reel_video(upload_url, video_path)
+    wait_for_media_container(container_id)
     res = publish_media_container(container_id)
-    return f"✅ Reel posted successfully (media ID: {res['id']})"
+    media_id = res["id"]
+    permalink = get_media_permalink(media_id)
+    print(f"✅ Reel posted successfully (media ID: {media_id})")
+    return media_id, permalink
 #*****************************INSTAGRAM***END*************************************
+
 
 def is_duplicate_video(url: str, history_file: str = "history.txt") -> bool:
     """
     Check if the video URL already exists in the history file.
     """
-    if not os.path.exists(history_file):
+    history_path = history_file if os.path.isabs(history_file) else os.path.join(BASE_DIR, history_file)
+    if not os.path.exists(history_path):
         return False
-    with open(history_file, "r", encoding="utf-8") as f:
+    with open(history_path, "r", encoding="utf-8") as f:
         history = f.read().splitlines()
     return url.strip() in history
+
 
 def save_video_to_history(url: str, history_file: str = "history.txt"):
     """
     Append a new video URL to the history file.
     """
-    with open(history_file, "a", encoding="utf-8") as f:
+    history_path = history_file if os.path.isabs(history_file) else os.path.join(BASE_DIR, history_file)
+    with open(history_path, "a", encoding="utf-8") as f:
         f.write(url.strip() + "\n")
+
 
 def clean_text_for_tts(text: str) -> str:
     # Remove URLs
@@ -397,25 +449,27 @@ def clean_text_for_tts(text: str) -> str:
     text = re.sub(r"\s{2,}", " ", text)
     return text.strip()
 
-# Function: Generate Instagram Caption using Gemini
+
+# Function: Generate NatGeo Narration using Gemini
 def generate_video_narration(nature: str, video_url: str, metadata: dict) -> str:
     """
     Generates a Nat Geo-style narration for the given video metadata.
     Narration duration is matched to video length (for TTS sync).
     """
-    # Extract semantic context
-    raw_title = metadata.get("original_url", "").split("/")[-2]
+    # Extract semantic context safely from original_url or title
+    original_url = (metadata.get("original_url") or "").rstrip("/")
+    raw_title = original_url.split("/")[-1] if "/" in original_url else metadata.get("title", "")
     # Remove trailing hyphenated numeric ID if present
     cleaned_title = re.sub(r"-\d+$", "", raw_title).replace("-", " ")
     content_hint = cleaned_title.strip().capitalize() or "A natural scene"
 
-    duration = metadata.get("duration", 15)  # seconds
+    duration = min(metadata.get("duration") or 15, 60)  # cap narration target at 60s
     tags = metadata.get("tags", [])
     tag_text = ", ".join(tags) if tags else "natural elements"
 
     # Estimate max narration word count
     words_per_second = 2  # slightly slower than normal for TTS clarity
-    max_words = int(duration * words_per_second * 0.9)  # 90% safety margin
+    max_words = int(duration * words_per_second * 0.85)  # safety margin so voiceover finishes before video ends
 
     prompt = f"""
 You are a poetic and cinematic National Geographic narrator.
@@ -444,6 +498,7 @@ Now write the narration.
     narration = response.content.strip()
 
     return narration
+
 
 def generate_caption_from_narration(narration: str, title: str) -> str:
     """
@@ -492,6 +547,7 @@ Rules:
 
     return caption.strip()
 
+
 def generate_title_from_narration(narration: str) -> str:
     """
     Generates a powerful, cinematic title (3–7 words) from a poetic nature narration.
@@ -502,7 +558,7 @@ You are a National Geographic headline writer.
 
 Given the following poetic narration:
 
-\"\"\"{narration}\"\"\" 
+\"\"\"{narration}\"\"\"
 
 Generate a single, cinematic and emotional title (3 to 7 words max) that captures the essence of the scene.
 It should feel powerful, poetic, and timeless — like a documentary title.
@@ -526,58 +582,78 @@ Return only the title. No HTML. No Markdown. No quotation marks.
     return clean_title.strip()
 
 
-def fetch_pexels_video(query="nature", min_duration=15):
+def fetch_pexels_video(query="nature", min_duration=15, max_duration=60):
+    if not PEXELS_API_KEY:
+        print("Pexels API key not configured.")
+        return None, None
+
     headers = {"Authorization": PEXELS_API_KEY}
-    params = {"query": query, "per_page": 30}
+    params = {"query": query, "per_page": 30, "orientation": "portrait"}
     url = "https://api.pexels.com/videos/search"
-    resp = requests.get(url, headers=headers, params=params)
+    resp = requests.get(url, headers=headers, params=params, timeout=HTTP_TIMEOUT)
 
     if resp.status_code != 200:
         print(f"Pexels error: {resp.status_code}")
         return None, None
 
-    videos = [v for v in resp.json().get("videos", []) if v["duration"] >= min_duration]
+    videos = [
+        v for v in resp.json().get("videos", [])
+        if min_duration <= v.get("duration", 0) <= max_duration
+    ]
     if not videos:
-        print("No Pexels videos found ≥ 15 seconds.")
+        print(f"No Pexels videos found between {min_duration}s and {max_duration}s.")
         return None, None
+
+    # Shuffle videos so repeated queries still yield diverse results
+    random.shuffle(videos)
 
     best_video_file = None
     best_video_meta = None
     best_quality = 0
 
     for video in videos:
-        for vf in video["video_files"]:
-            resolution = vf["width"] * vf["height"]
-            is_vertical = vf["height"] > vf["width"]
+        for vf in video.get("video_files", []):
+            link = vf.get("link")
+            if not link or is_duplicate_video(link):
+                continue
+            width = vf.get("width") or 0
+            height = vf.get("height") or 0
+            resolution = width * height
+            is_vertical = height > width
 
-            # Higher preference if vertical; HD quality (720p or above)
+            # Prefer HD/FullHD vertical videos; cap preference at 1080p so 4K horizontal never beats 1080p vertical
             if resolution >= 1280 * 720:
-                score = resolution + (1e6 if is_vertical else 0)
+                res_score = min(resolution, 1920 * 1080)
+                score = res_score + (10_000_000 if is_vertical else 0)
                 if score > best_quality:
                     best_quality = score
                     best_video_file = vf
                     best_video_meta = video
 
     if not best_video_file:
-        print("No suitable HD video found.")
+        print("No suitable unique HD video found on Pexels.")
         return None, None
 
     print("📱 Using vertical video (portrait mode)" if best_video_file["height"] > best_video_file["width"]
           else "🖥️ Using horizontal video (landscape mode)")
 
     metadata = {
-        "title": best_video_meta.get("url", "").split("/")[-1].replace("-", " ").replace("/", ""),
+        "title": best_video_meta.get("url", "").rstrip("/").split("/")[-1].replace("-", " "),
         "duration": best_video_meta.get("duration"),
-        "width": best_video_meta.get("width"),
-        "height": best_video_meta.get("height"),
-        "tags": [tag["title"] for tag in best_video_meta.get("tags", [])] if "tags" in best_video_meta else [],
+        "width": best_video_file.get("width"),
+        "height": best_video_file.get("height"),
+        "tags": [tag["title"] for tag in best_video_meta.get("tags", []) if isinstance(tag, dict) and "title" in tag],
         "original_url": best_video_meta.get("url")
     }
 
     return best_video_file["link"], metadata
 
 
-def fetch_pixabay_video(query="nature", min_duration=15):
+def fetch_pixabay_video(query="nature", min_duration=15, max_duration=60):
+    if not PIXABAY_API_KEY:
+        print("Pixabay API key not configured.")
+        return None, None
+
     params = {
         "key": PIXABAY_API_KEY,
         "q": query,
@@ -585,35 +661,46 @@ def fetch_pixabay_video(query="nature", min_duration=15):
         "per_page": 30
     }
     url = "https://pixabay.com/api/videos/"
-    resp = requests.get(url, params=params)
+    resp = requests.get(url, params=params, timeout=HTTP_TIMEOUT)
 
     if resp.status_code != 200:
         print(f"Pixabay error: {resp.status_code}")
         return None, None
 
-    hits = [v for v in resp.json().get("hits", []) if v["duration"] >= min_duration]
+    hits = [
+        v for v in resp.json().get("hits", [])
+        if min_duration <= v.get("duration", 0) <= max_duration
+    ]
     if not hits:
-        print("No Pixabay videos found ≥ 15 seconds.")
+        print(f"No Pixabay videos found between {min_duration}s and {max_duration}s.")
         return None, None
+
+    random.shuffle(hits)
 
     best_video_file = None
     best_video_meta = None
     best_quality = 0
 
     for video in hits:
-        for _, vf in video["videos"].items():
-            resolution = vf["width"] * vf["height"]
-            is_vertical = vf["height"] > vf["width"]
+        for _, vf in video.get("videos", {}).items():
+            link = vf.get("url")
+            if not link or is_duplicate_video(link):
+                continue
+            width = vf.get("width") or 0
+            height = vf.get("height") or 0
+            resolution = width * height
+            is_vertical = height > width
 
             if resolution >= 1280 * 720:
-                score = resolution + (1e6 if is_vertical else 0)
+                res_score = min(resolution, 1920 * 1080)
+                score = res_score + (10_000_000 if is_vertical else 0)
                 if score > best_quality:
                     best_quality = score
                     best_video_file = vf
                     best_video_meta = video
 
     if not best_video_file:
-        print("No suitable HD video found.")
+        print("No suitable unique HD video found on Pixabay.")
         return None, None
 
     print("📱 Using vertical video (portrait mode)" if best_video_file["height"] > best_video_file["width"]
@@ -624,41 +711,17 @@ def fetch_pixabay_video(query="nature", min_duration=15):
         "duration": best_video_meta.get("duration"),
         "width": best_video_file["width"],
         "height": best_video_file["height"],
-        "tags": [t.strip() for t in best_video_meta.get("tags", "").split(",")],
+        "tags": [t.strip() for t in best_video_meta.get("tags", "").split(",") if t.strip()],
         "original_url": best_video_meta.get("pageURL")
     }
 
     return best_video_file["url"], metadata
 
 
-'''
-def backup_videos():
-    """
-    Picks a random video and its metadata from coverr_list.json.
-    Used as fallback when Pexels and Pixabay fail.
-    """
-    try:
-        with open("coverr_list.json", "r", encoding="utf-8") as f:
-            video_list = json.load(f)
-
-        selected = random.choice(video_list)
-        metadata = {
-            "title": selected.get("title", ""),
-            "description": selected.get("description", ""),
-            "query": selected.get("query", ""),
-            "original_url": selected.get("url")
-        }
-        return selected["url"], metadata
-
-    except Exception as e:
-        print(f"❌ Failed to fetch backup Coverr video: {e}")
-        return None, None
-'''
 def fetch_nature_video(query="nature"):
     """
-    Tries Pexels, then Pixabay, then Coverr API, then falls back to local coverr_list.json.
+    Tries Pexels first, then falls back to Pixabay.
     """
-    
     video_url, metadata = fetch_pexels_video(query)
     if video_url:
         print("✅ Fetched video from Pexels:", video_url)
@@ -668,22 +731,19 @@ def fetch_nature_video(query="nature"):
     if video_url:
         print("✅ Fetched video from Pixabay:", video_url)
         return video_url, metadata
-    '''
-    video_url, metadata = backup_videos()
-    if video_url:
-        print("✅ Fetched video from local Coverr backup list:", video_url)
-        return video_url, metadata
-    '''
-    raise Exception("❌ Failed to fetch a nature video from all sources and backups.")
+
+    raise Exception("❌ Failed to fetch a nature video from all sources.")
+
 
 def download_video(video_url: str, output_dir="videos") -> str:
     os.makedirs(output_dir, exist_ok=True)
     file_name = f"nature_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
     local_path = os.path.join(output_dir, file_name)
     try:
-        resp = requests.get(video_url, stream=True)
+        resp = requests.get(video_url, stream=True, timeout=HTTP_TIMEOUT)
+        resp.raise_for_status()
         with open(local_path, "wb") as f:
-            for chunk in resp.iter_content(chunk_size=1024*1024):  # 1MB
+            for chunk in resp.iter_content(chunk_size=1024 * 1024):  # 1MB
                 if chunk:
                     f.write(chunk)
         print(f"✅ Video saved to {local_path}")
@@ -691,6 +751,7 @@ def download_video(video_url: str, output_dir="videos") -> str:
     except Exception as e:
         print(f"❌ Failed to download video: {e}")
         return ""
+
 
 def synthesize_text(text, output_path="output.mp3", selected_voice=None):
     client = texttospeech.TextToSpeechClient()
@@ -709,11 +770,17 @@ def synthesize_text(text, output_path="output.mp3", selected_voice=None):
         name=selected_voice
     )
 
-    audio_config = texttospeech.AudioConfig(
-        audio_encoding=texttospeech.AudioEncoding.MP3,
-        speaking_rate=1.1,
-        effects_profile_id=["handset-class-device"]
-    )
+    # Chirp3-HD voices do not support speaking_rate or effects_profile_id
+    if "Chirp3" in selected_voice:
+        audio_config = texttospeech.AudioConfig(
+            audio_encoding=texttospeech.AudioEncoding.MP3
+        )
+    else:
+        audio_config = texttospeech.AudioConfig(
+            audio_encoding=texttospeech.AudioEncoding.MP3,
+            speaking_rate=1.1,
+            effects_profile_id=["handset-class-device"]
+        )
 
     response = client.synthesize_speech(
         input=input_text, voice=voice, audio_config=audio_config
@@ -724,6 +791,7 @@ def synthesize_text(text, output_path="output.mp3", selected_voice=None):
         print(f"✅ Audio content written to {output_path} using voice: {selected_voice}")
 
     return output_path
+
 
 def fetch_unique_nature_video(attempts=5):
     for attempt in range(attempts):
@@ -744,54 +812,75 @@ def fetch_unique_nature_video(attempts=5):
 
 # Main execution
 if __name__ == "__main__":
-    
     try:
         random_query, video_url, metadata = fetch_unique_nature_video()
         print(f"Fetched video URL: {video_url}")
         print(f"Video Metadata: {metadata}")
     except Exception as e:
         print(str(e))
-        exit()
+        sys.exit(1)
 
     video_path = download_video(video_url)
     if not video_path:
-        exit()
+        sys.exit(1)
 
     narration = generate_video_narration(random_query, video_url, metadata)
     print(f"Narration:\n{narration}")
 
-    voiceover_path = synthesize_text(re.sub(r'[*_#~]', '', narration).strip(), "voiceover.mp3")
+    voiceover_path = synthesize_text(re.sub(r"[*_#~]", "", narration).strip(), "voiceover.mp3")
 
     # Generate title
     title = generate_title_from_narration(narration)
     print(f" title-->{title}")
     # Generate caption
-    caption = generate_caption_from_narration(narration,title)
-    print(f"Generated caption: {caption}")    
+    caption = generate_caption_from_narration(narration, title)
+    print(f"Generated caption: {caption}")
 
     # 1. Make Video
     final_video_path = combine_video_with_music_and_voiceover(video_path, voiceover_path)
 
-    # ✅ Add validation here
+    # ✅ Validate final video
     if not final_video_path or not os.path.exists(final_video_path):
         raise FileNotFoundError("❌ Final narrated video was not generated correctly.")
-       
-    # 2. Publish to Instagram
-    post_reel(final_video_path, caption)
-    print(f"✅ Reel Uploaded.")
-        
-    # 3. Publish to Youtube
-    tags_list = ["nature", "natgeo", "wildlife", "adventure", "travel", "explore", "beautiful", "amazing", "unforgettable", "naturelovers", "naturephotography", "naturelovers", "naturephotography", "naturelovers", "naturephotography"]
-    yt_id = upload_video_to_youtube(final_video_path, title=title, description=caption, tags=tags_list)
-    print(f"✅ YouTube Shorts uploaded: https://youtu.be/{yt_id}")
-        
-    # 4. Publish to Twitter (X)
-    yt_url = f"https://youtu.be/{yt_id}" if 'yt_id' in locals() else ""
-    insta_url = "https://www.instagram.com/poeminpixels/"  # replace with your real profile link
-    tweet_caption = generate_tweet_from_video(narration, yt_url, insta_url)
 
-    # 5. Post to Twitter (text only)
+    insta_url = "https://www.instagram.com/geoserene/"
+    yt_url = ""
+    published_any = False
+
+    # 2. Publish to Instagram
+    try:
+        _, permalink = post_reel(final_video_path, caption)
+        if permalink:
+            insta_url = permalink
+        published_any = True
+        print("✅ Reel Uploaded.")
+    except Exception as e:
+        print(f"❌ Instagram Reel upload failed: {e}")
+
+    # 3. Publish to YouTube
+    tags_list = [
+        "nature", "natgeo", "wildlife", "adventure", "travel",
+        "explore", "beautiful", "amazing", "unforgettable",
+        "naturelovers", "naturephotography"
+    ]
+    try:
+        yt_id = upload_video_to_youtube(final_video_path, title=title, description=caption, tags=tags_list)
+        yt_url = f"https://youtu.be/{yt_id}"
+        published_any = True
+        print(f"✅ YouTube Shorts uploaded: {yt_url}")
+    except Exception as e:
+        print(f"❌ YouTube upload failed: {e}")
+
+    # 4. Publish to Twitter (X)
+    tweet_caption = generate_tweet_from_video(narration, yt_url, insta_url)
     tweet_url = post_to_twitter_text_only(tweet_caption)
-    print(f"✅ tweet done successfully:{tweet_url}")
+    if tweet_url:
+        published_any = True
+        print(f"✅ Tweet done successfully: {tweet_url}")
+
+    if not published_any:
+        print("❌ All publishing targets failed.")
+        sys.exit(1)
+
     
 

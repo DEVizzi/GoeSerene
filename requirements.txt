@@ -1,7 +1,7 @@
 langchain
+langchain-core
 langchain-google-genai
 google-generativeai
-instagrapi
 python-dotenv
 requests
 pydub
@@ -10,3 +10,4 @@ google-auth
 google-auth-oauthlib
 google-cloud-texttospeech
 tweepy
+
