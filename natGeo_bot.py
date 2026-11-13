@@ -236,19 +236,31 @@ def combine_video_with_music_and_voiceover(video_path: str, voiceover_path: str)
         "-i", inputs[1],  # music or delayed voiceover
         "-i", inputs[2],  # voiceover or music
         "-filter_complex",
-        f"{filter_complex};[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1[v]",
+        (
+            f"{filter_complex};"
+            "[0:v]fps=30,"
+            "scale=1080:1920:force_original_aspect_ratio=increase:out_color_matrix=bt709,"
+            "crop=1080:1920,setsar=1,"
+            "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709[v]"
+        ),
         "-map", "[v]",       # ✅ only the scaled/cropped 9:16 video stream
         "-map", "[out]",     # ✅ final mixed audio stream
+        "-map_metadata", "-1",
         "-c:v", "libx264",
         "-preset", "fast",
         "-profile:v", "high",
         "-pix_fmt", "yuv420p",
+        "-colorspace", "bt709",
+        "-color_primaries", "bt709",
+        "-color_trc", "bt709",
+        "-bsf:v", "filter_units=remove_types=6",
         "-b:v", "5500k",
         "-maxrate", "6000k",
         "-bufsize", "12000k",
         "-c:a", "aac",
         "-b:a", "128k",
         "-ar", "44100",
+        "-movflags", "+faststart",
         "-shortest",
         output_path
     ]
