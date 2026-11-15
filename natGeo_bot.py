@@ -174,8 +174,8 @@ def generate_ass_subtitles(
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
         "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
-        "Style: Default,Arial,52,&H00FFFFFF,&H0000FFFF,&H00000000,&H80000000,"
-        "-1,0,0,0,100,100,1,0,1,4,2,2,120,120,420,1\n"
+        "Style: Default,Arial,50,&H00FFFFFF,&H0000FFFF,&H00000000,&HA0000000,"
+        "-1,0,0,0,100,100,1,0,3,8,0,2,120,120,420,1\n"
         "Style: Hook,Arial,44,&H0000D7FF,&H00FFFFFF,&H00000000,&HB0000000,"
         "-1,0,0,0,100,100,1,0,3,6,0,8,120,120,230,1\n"
         "\n"
@@ -273,7 +273,7 @@ def combine_video_with_music_and_voiceover(
     # Build normalized 9:16 visual stream (multi-clip fast cuts if >1 clip provided)
     stitched_video = primary_video
     if len(video_paths) > 1:
-        segment_duration = max(2.2, min(3.8, target_duration / len(video_paths)))
+        segment_duration = max(2.0, min(2.6, target_duration / len(video_paths)))
         clip_inputs = []
         filter_parts = []
         concat_labels = []
@@ -306,7 +306,9 @@ def combine_video_with_music_and_voiceover(
         "[0:v]fps=30,"
         "scale=1080:1920:force_original_aspect_ratio=increase:out_color_matrix=bt709,"
         "crop=1080:1920,setsar=1,"
-        "eq=contrast=1.05:saturation=1.12,"
+        "eq=contrast=1.06:saturation=1.14,"
+        "unsharp=5:5:0.5:5:5:0.0,"
+        "vignette=PI/6,"
         "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
     )
     if subtitle_path and os.path.exists(subtitle_path) and _ffmpeg_has_filter("ass"):
@@ -328,16 +330,20 @@ def combine_video_with_music_and_voiceover(
         "-preset", "fast",
         "-profile:v", "high",
         "-pix_fmt", "yuv420p",
+        "-g", "60",
+        "-keyint_min", "60",
         "-colorspace", "bt709",
         "-color_primaries", "bt709",
         "-color_trc", "bt709",
         "-bsf:v", "filter_units=remove_types=6",
-        "-b:v", "5500k",
-        "-maxrate", "6000k",
-        "-bufsize", "12000k",
+        "-b:v", "5000k",
+        "-maxrate", "5500k",
+        "-bufsize", "11000k",
         "-c:a", "aac",
         "-b:a", "128k",
+        "-ac", "2",
         "-ar", "44100",
+        "-max_muxing_queue_size", "1024",
         "-movflags", "+faststart",
         output_path
     ]
@@ -623,16 +629,25 @@ def get_media_permalink(media_id: str) -> str:
         return ""
 
 
-def post_reel(video_path: str, caption: str, cover_url: str = None) -> tuple:
+def post_reel(video_path: str, caption: str, cover_url: str = None, max_attempts: int = 2) -> tuple:
     ensure_long_lived_ig_token()
-    container_id, upload_url = init_reel_upload(caption, cover_url)
-    upload_reel_video(upload_url, video_path)
-    wait_for_media_container(container_id)
-    res = publish_media_container(container_id)
-    media_id = res["id"]
-    permalink = get_media_permalink(media_id)
-    print(f"✅ Reel posted successfully (media ID: {media_id})")
-    return media_id, permalink
+    last_err = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            container_id, upload_url = init_reel_upload(caption, cover_url)
+            upload_reel_video(upload_url, video_path)
+            wait_for_media_container(container_id)
+            res = publish_media_container(container_id)
+            media_id = res["id"]
+            permalink = get_media_permalink(media_id)
+            print(f"✅ Reel posted successfully (media ID: {media_id})")
+            return media_id, permalink
+        except Exception as e:
+            last_err = e
+            print(f"⚠️ Instagram Reel attempt {attempt}/{max_attempts} failed: {e}")
+            if attempt < max_attempts:
+                time.sleep(5)
+    raise last_err
 #*****************************INSTAGRAM***END*************************************
 
 
@@ -763,32 +778,31 @@ Now write the voiceover script.
 
 def generate_caption_from_narration(narration: str, title: str) -> str:
     """
-    Generates an engagement-optimized Instagram/YouTube caption with a Save/Share CTA,
-    under 5000 characters and free of HTML/markdown formatting.
+    Generates an SEO- and engagement-optimized Instagram/YouTube caption with
+    searchable keywords, a comment-bait question, Save/Share CTA, and 8-12 targeted hashtags.
     """
     prompt = f"""
-You're a viral social media strategist for National Geographic.
+You're a viral Instagram Reels & YouTube Shorts SEO strategist for @geoserene.
 
 Given:
 TITLE: {title}
 NARRATION: {narration}
 
-Craft a caption with this exact structure:
-1. Start with a bold 1-line hook/title (plain text, title case, no HTML or markdown)
-2. Add a 2-sentence intriguing takeaway or bonus fact from the narration
-3. Add a high-engagement Save/Share CTA like:
-   "Save this so you don't forget it, and share it with someone who loves wildlife. Follow @geoserene for daily wild discoveries."
-4. Use a clean divider: 🌍🌿✨ ———— ✨🌿🌍
-5. End with 12-18 relevant, space-separated hashtags (include #wildlife #natgeo #naturefacts #shorts #reels)
+Craft a high-reach, SEO-optimized caption with this exact structure:
+1. SEO HOOK LINE: Start with the Title + 1 keyword-rich curiosity sentence summarizing what viewers are watching (helps Instagram/YouTube Search index the topic).
+2. COMMENT TRIGGER: A blank line, then one intriguing, easy-to-answer question for viewers (e.g., "Would you want to witness this in person? Comment YES or NO 👇").
+3. SAVE/SHARE CTA: "Save this for later & follow @geoserene for daily wild discoveries."
+4. HASHTAGS: A blank line, then 8-12 focused, space-separated hashtags mixing broad + niche search terms (always include #wildlife #natgeo #animalfacts #naturefacts #shorts #reels).
 
 Rules:
-- Do NOT include any markdown or HTML (no <center>, **, etc.)
-- Keep the entire caption under 2200 characters for optimal Reel readability.
+- Keep it advertiser-friendly and brand-safe (no profanity or explicit words that trigger shadowbans).
+- Do NOT include markdown (*, _, `) or HTML.
+- Keep total length under 1500 characters.
 - Return only the full caption.
     """
 
     messages = [
-        SystemMessage(content="You're a seasoned viral social media strategist for National Geographic."),
+        SystemMessage(content="You're a seasoned viral social media & SEO strategist for National Geographic."),
         HumanMessage(content=prompt)
     ]
 
@@ -807,17 +821,18 @@ Rules:
 
 def generate_title_from_narration(narration: str) -> str:
     """
-    Generates a curiosity-driven, searchable title (4-9 words, <=65 chars)
-    suitable for YouTube Shorts and Instagram Reels.
+    Generates a curiosity-driven, searchable, brand-safe title (4-8 words, <=55 chars)
+    suitable for YouTube Shorts, Instagram Search, and the 2.6s top hook banner.
     """
     prompt = f"""
-You are a viral YouTube Shorts & National Geographic headline writer.
+You are a viral YouTube Shorts & National Geographic SEO headline writer.
 
 Given this narration:
 \"\"\"{narration}\"\"\"
 
-Write ONE curiosity-driven, search-friendly title (4 to 8 words, under 60 characters) that makes people stop scrolling and click.
-Include the specific animal or phenomenon name when possible.
+Write ONE curiosity-driven, search-friendly title (4 to 8 words, strictly under 55 characters) that makes people stop scrolling.
+Include the specific animal or phenomenon name.
+Keep it 100% advertiser-friendly and family-safe (no explicit/adult words that limit reach).
 Avoid generic titles like "Beauty of Nature" or "Silent Wilderness".
 
 Return only the title. No HTML. No Markdown. No quotation marks.
@@ -1117,7 +1132,7 @@ def fetch_nature_video(query="nature"):
     raise Exception("❌ Failed to fetch a nature video from all sources.")
 
 
-def fetch_unique_nature_clips(attempts=5, max_clips=5):
+def fetch_unique_nature_clips(attempts=5, max_clips=7):
     """
     Fetches 1 to max_clips unique video clips for a wildlife topic so the final Reel
     can use fast 2.5-3.5s visual cuts instead of a single static shot.
@@ -1177,7 +1192,7 @@ def download_video(video_url: str, output_dir="videos", suffix: str = "") -> str
 
 async def _synthesize_edge_with_subtitles(clean_text: str, selected_voice: str, output_path: str) -> list:
     """Streams edge-tts audio + WordBoundary events to capture exact caption timestamps."""
-    communicate = edge_tts.Communicate(clean_text, selected_voice, rate="-4%", boundary="WordBoundary")
+    communicate = edge_tts.Communicate(clean_text, selected_voice, rate="+4%", boundary="WordBoundary")
     word_events = []
     with open(output_path, "wb") as audio_file:
         async for chunk in communicate.stream():
