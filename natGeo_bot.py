@@ -91,88 +91,105 @@ llm = ChatGoogleGenerativeAI(
 )
 
 
-NATURE_QUERIES = [
-    # Landscapes & Natural Phenomena
-    "rainforest canopy drone", "sunset over lake", "snowy mountain peaks", "crashing ocean waves",
-    "desert dunes wind", "aurora borealis timelapse", "volcanic eruption", "sandstorm in desert",
-    "glacier melting timelapse", "cloud inversion in mountains", "lightning storm over hills",
-    "starry night sky over mountains", "fog rolling over hills", "moonlight over ocean",
-    "golden hour landscape", "rainbow over valley", "waterfall in rainforest", "frozen waterfall",
-    "geysers erupting", "ice cave interior",
+WILDLIFE_TOPICS = [
+    # High-Curiosity Predators & Marine Life
+    "orca", "great white shark", "humpback whale", "mantis shrimp", "mimic octopus",
+    "blue-ringed octopus", "snow leopard", "cheetah", "peregrine falcon", "bald eagle",
+    "honey badger", "komodo dragon", "king cobra", "polar bear", "grizzly bear",
+    "wolf pack", "bengal tiger", "african lion", "harpy eagle", "osprey catching fish",
+    "electric eel", "archerfish", "sailfish", "moray eel", "sea otter",
+    "green sea turtle", "manta ray", "bioluminescent jellyfish", "cuttlefish", "nautilus",
 
-    # Wildlife & Animals
-    "slow motion butterflies", "birds flying over cliffs", "wild horses running", "elephants at watering hole",
-    "underwater sea turtles", "humpback whales breaching", "lions resting in savannah",
-    "monkeys swinging in trees", "eagles soaring over peaks", "penguins walking on ice",
-    "fox in snowy forest", "timelapse of ants", "deer in misty forest", "owls in moonlight",
+    # Bizarre & Clever Animal Behaviors
+    "lyrebird", "bowerbird", "weaver bird", "albatross", "emperor penguin",
+    "arctic fox", "fennec fox", "red panda", "axolotl", "tardigrade",
+    "chameleon", "leaf-tailed gecko", "poison dart frog", "glass frog", "wood frog",
+    "leafcutter ant", "praying mantis", "monarch butterfly", "firefly", "scarab beetle",
+    "beaver dam", "meerkat", "platypus", "pangolin", "sloth",
+    "hummingbird", "kingfisher", "barn owl", "snowy owl", "flamingo",
 
-    # Aerial & Drone Shots
-    "tropical island aerial", "canyon drone flyover", "forest from above", "coastline aerial view",
-    "aerial of winding river", "mountain pass from drone", "hot air balloons over valley",
-
-    # Seasonal Themes
-    "autumn leaves falling", "heavy snowfall in woods", "spring blossoms", "summer meadow breeze",
-    "winter forest silence", "first frost in morning light", "fall colors from above",
-
-    # Water & Weather
-    "ocean waves crashing on rocks", "river stream with rocks", "storm clouds rolling in",
-    "thunderstorm sky timelapse", "tide pools with sea life", "rain drops on leaves close-up",
-    "rippling lake at sunrise", "flooded forest reflection", "underwater coral reef",
-
-    # Macro & Close-Up
-    "close-up raindrops on leaves", "bees pollinating flowers", "snail crawling on moss",
-    "dew on spider web", "macro of flower opening", "insects on wildflowers", "butterfly on leaf macro",
-
-    # Forest & Flora
-    "foggy morning forest", "sun rays breaking through trees", "lush jungle greenery",
-    "pine forest in snow", "moss-covered rocks in forest", "blossoming cherry trees",
-    "dense bamboo forest", "wildflowers in alpine meadow", "ferns in rainforest floor",
-
-    # Unique Environments
-    "salt flats reflection", "lava flowing into ocean", "iceberg floating", "cave with waterfall",
-    "mangrove swamp", "savannah sunset", "frozen lake reflections", "crystal clear mountain lake",
-
-    # Atmospheric and Light Phenomena
-    "sun halo in sky", "sunset through fog", "crescent moon in dusk sky", "double rainbow in valley", "golden mist sunrise",
-
-    # Wildlife & Behaviors (filtered)
-    "flamingos in salt lake", "dolphins jumping in ocean", "eagles catching fish",
-    "bison crossing river", "sea otters floating", "polar bears in arctic", "herd of deer at dawn",
-    "bird migration in sky", "baby animals in wild",
-
-    # Fantasy & Mystical Moods (filtered)
-    "enchanted forest with mist", "fairy light woods", "foggy swamp sunrise",
-    "moonlight path in forest", "twilight sky with silhouettes", "mystic mountain valley",
-
-    # Natural Textures and Elements (filtered)
-    "bark textures close-up", "dripping water in cave", "ripples on water surface", "tree roots exposed", "lichen growing on stone", "flowing sand in desert",
-
-    # Weather Extremes & Drama (filtered)
-    "sun piercing storm clouds", "wild wind in tall grass",
-
-    # Biomes & Unique Locations
-    "sahara desert sunset", "patagonia glacier view", "icelandic hot springs", "norwegian fjord drone",
-    "new zealand rainforest", "grand canyon at dusk", "amazon river aerial", "antarctic ice shelf",
-    "savannah storm chase", "alpine village in snow", "coastal cliffs with waves", "cenote underwater cave",
-
-    # Natural Rhythms & Movement
-    "leaves rustling in breeze", "waves lapping on shore", "bees swarming hive", "grass swaying in wind",
-    "timelapse clouds over mountains", "sunlight flickering through leaves", "forest shadows moving",
-
-    # Human-Nature Harmony
-    "hiker on mountain ridge", "tent under starry sky", "campfire in forest clearing", "kayaking in calm lake",
-    "yoga in nature sunrise", "treehouse in jungle", "canoe on misty river"
+    # Dramatic Natural Phenomena & Extreme Habitats
+    "aurora borealis", "volcanic lightning", "underwater volcano", "bioluminescent bay",
+    "monarch butterfly migration", "wildebeest migration", "sardine run", "coral spawning",
+    "glacier calving", "supercell thunderstorm", "desert sandstorm", "hydrothermal vent",
 ]
+
+# Keep backwards-compatible alias
+NATURE_QUERIES = WILDLIFE_TOPICS
 
 
 voice_names = [
-    "en-US-ChristopherNeural",
-    "en-US-GuyNeural",
-    "en-US-EricNeural",
     "en-US-AndrewNeural",
-    "en-US-BrianNeural",
     "en-GB-RyanNeural",
+    "en-US-BrianNeural",
+    "en-US-ChristopherNeural",
 ]
+
+
+def _ffmpeg_has_filter(filter_name: str) -> bool:
+    """Checks if the installed ffmpeg binary supports a given filter."""
+    try:
+        res = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-filters"],
+            capture_output=True, text=True, timeout=10
+        )
+        return bool(re.search(rf"\b{re.escape(filter_name)}\b", res.stdout or ""))
+    except Exception:
+        return False
+
+
+def _format_ass_time(seconds: float) -> str:
+    """Formats seconds into ASS timestamp H:MM:SS.cc."""
+    seconds = max(0.0, seconds)
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = seconds % 60
+    return f"{hours}:{minutes:02d}:{secs:05.2f}"
+
+
+def generate_ass_subtitles(word_events: list, ass_path: str, words_per_chunk: int = 3) -> str:
+    """
+    Generates a bold, high-contrast .ass subtitle file from edge-tts WordBoundary events.
+    Designed for 1080x1920 vertical Reels/Shorts (positioned in the lower-third safe zone).
+    """
+    if not word_events:
+        return ""
+
+    header = (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        "PlayResX: 1080\n"
+        "PlayResY: 1920\n"
+        "WrapStyle: 2\n"
+        "\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+        "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+        "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        "Style: Default,Arial,74,&H00FFFFFF,&H0000FFFF,&H00000000,&H80000000,"
+        "-1,0,0,0,100,100,1,0,1,5,2,2,60,60,380,1\n"
+        "\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    )
+
+    lines = [header]
+    for i in range(0, len(word_events), words_per_chunk):
+        chunk = word_events[i:i + words_per_chunk]
+        start_s = chunk[0]["start"]
+        end_s = max(chunk[-1]["end"], start_s + 0.25)
+        text = " ".join(w["text"] for w in chunk).strip()
+        if not text:
+            continue
+        # Escape ASS braces
+        text = text.replace("{", "(").replace("}", ")")
+        lines.append(
+            f"Dialogue: 0,{_format_ass_time(start_s)},{_format_ass_time(end_s)},Default,,0,0,0,,{text.upper()}\n"
+        )
+
+    with open(ass_path, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+    return ass_path
 
 
 def get_audio_duration(audio_path: str) -> float:
@@ -181,70 +198,95 @@ def get_audio_duration(audio_path: str) -> float:
     return float(info["duration"])
 
 
-def combine_video_with_music_and_voiceover(video_path: str, voiceover_path: str) -> str:
+def combine_video_with_music_and_voiceover(
+    video_paths,
+    voiceover_path: str,
+    subtitle_path: str = "",
+) -> str:
     """
-    Combines the given video with soft background music and a voiceover.
-    - If the video has no audio, only music and voiceover are mixed.
-    - The voiceover is delayed slightly and mixed over background music.
+    Combines one or more video clips with background music, immediate voiceover (0.1s lead-in),
+    and optional burned-in ASS captions, normalized to 1080x1920 30fps SDR bt709.
+    - When multiple clips are passed, each clip is sliced into fast-paced ~3s segments and concatenated.
     """
-    output_path = video_path.replace(".mp4", "_final_narrated.mp4")
+    if isinstance(video_paths, str):
+        video_paths = [video_paths]
+    if not video_paths:
+        raise ValueError("At least one video path is required.")
+
+    primary_video = video_paths[0]
+    output_path = primary_video.replace(".mp4", "_final_narrated.mp4")
     music_dir = os.path.join(BASE_DIR, "music")
     music_files = [f for f in os.listdir(music_dir) if f.endswith(".mp3")]
     if not music_files:
         raise FileNotFoundError(f"No .mp3 files found in {music_dir}")
     music_path = os.path.join(music_dir, random.choice(music_files))
 
-    temp_dir = tempfile.gettempdir()
-    delayed_voice = os.path.join(temp_dir, "delayed_voice.mp3")
+    voice_duration = get_audio_duration(voiceover_path)
+    target_duration = max(voice_duration + 0.6, 10.0)
 
-    # Step 1: Apply 1.5s delay + 3s fade-in to voiceover
+    temp_dir = tempfile.gettempdir()
+    paced_voice = os.path.join(temp_dir, "paced_voice.mp3")
+
+    # Start voiceover immediately (tiny 100ms lead-in) so the 0-2s hook hits right away
     subprocess.run([
         "ffmpeg", "-y",
         "-i", voiceover_path,
-        "-af", "adelay=1500|1500,afade=t=in:ss=0:d=3",
-        delayed_voice
+        "-af", "adelay=100|100",
+        paced_voice
     ], check=True)
 
-    # Step 2: Detect if input video has audio using ffmpeg
-    probe = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-i", video_path],
-        capture_output=True, text=True
-    )
-    include_video_audio = "Audio:" in (probe.stderr or "")
+    # Build normalized 9:16 visual stream (multi-clip fast cuts if >1 clip provided)
+    stitched_video = primary_video
+    if len(video_paths) > 1:
+        segment_duration = max(2.2, min(3.8, target_duration / len(video_paths)))
+        clip_inputs = []
+        filter_parts = []
+        concat_labels = []
+        for idx, vp in enumerate(video_paths):
+            clip_inputs.extend(["-t", f"{segment_duration:.2f}", "-i", vp])
+            filter_parts.append(
+                f"[{idx}:v]fps=30,"
+                "scale=1080:1920:force_original_aspect_ratio=increase:out_color_matrix=bt709,"
+                "crop=1080:1920,setsar=1,"
+                f"setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709[v{idx}]"
+            )
+            concat_labels.append(f"[v{idx}]")
 
-    # Step 3: Prepare filter_complex (normalize=0 prevents volume drops/jumps when voiceover ends)
-    if include_video_audio:
-        # Inputs: 0 = video, 1 = music, 2 = voiceover
-        filter_complex = (
-            "[0:a]volume=0.75[vid];"
-            "[1:a]volume=0.35[music];"
-            "[vid][music]amix=inputs=2:duration=first:normalize=0[bg];"
-            "[bg][2:a]amix=inputs=2:duration=first:normalize=0[out]"
+        stitched_video = os.path.join(temp_dir, "stitched_visual.mp4")
+        concat_fc = ";".join(filter_parts) + f";{''.join(concat_labels)}concat=n={len(video_paths)}:v=1:a=0[vout]"
+        subprocess.run(
+            ["ffmpeg", "-y", *clip_inputs, "-filter_complex", concat_fc, "-map", "[vout]",
+             "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p", stitched_video],
+            check=True,
         )
-        inputs = [video_path, music_path, delayed_voice]
-    else:
-        # Inputs: 0 = video, 1 = voiceover, 2 = music
-        filter_complex = (
-            "[2:a]volume=0.35[music];"
-            "[music][1:a]amix=inputs=2:duration=first:normalize=0[out]"
-        )
-        inputs = [video_path, delayed_voice, music_path]
+
+    # Mix background music (low) + immediate voiceover
+    filter_complex = (
+        "[2:a]volume=0.22[music];"
+        "[music][1:a]amix=inputs=2:duration=longest:normalize=0[out]"
+    )
+    inputs = [stitched_video, paced_voice, music_path]
+
+    video_chain = (
+        "[0:v]fps=30,"
+        "scale=1080:1920:force_original_aspect_ratio=increase:out_color_matrix=bt709,"
+        "crop=1080:1920,setsar=1,"
+        "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
+    )
+    if subtitle_path and os.path.exists(subtitle_path) and _ffmpeg_has_filter("ass"):
+        escaped_sub = subtitle_path.replace("\\", "/").replace(":", "\\:")
+        video_chain += f",ass='{escaped_sub}'"
+    video_chain += "[v]"
 
     cmd = [
         "ffmpeg", "-y",
-        "-i", inputs[0],  # original video
-        "-i", inputs[1],  # music or delayed voiceover
-        "-i", inputs[2],  # voiceover or music
-        "-filter_complex",
-        (
-            f"{filter_complex};"
-            "[0:v]fps=30,"
-            "scale=1080:1920:force_original_aspect_ratio=increase:out_color_matrix=bt709,"
-            "crop=1080:1920,setsar=1,"
-            "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709[v]"
-        ),
-        "-map", "[v]",       # ✅ only the scaled/cropped 9:16 video stream
-        "-map", "[out]",     # ✅ final mixed audio stream
+        "-stream_loop", "-1", "-i", inputs[0],
+        "-i", inputs[1],
+        "-stream_loop", "-1", "-i", inputs[2],
+        "-t", f"{target_duration:.2f}",
+        "-filter_complex", f"{filter_complex};{video_chain}",
+        "-map", "[v]",
+        "-map", "[out]",
         "-map_metadata", "-1",
         "-c:v", "libx264",
         "-preset", "fast",
@@ -261,7 +303,6 @@ def combine_video_with_music_and_voiceover(video_path: str, voiceover_path: str)
         "-b:a", "128k",
         "-ar", "44100",
         "-movflags", "+faststart",
-        "-shortest",
         output_path
     ]
 
@@ -304,8 +345,8 @@ def generate_tweet_from_video(poem: str, youtube_url: str = "", insta_url: str =
     base_links = f"🎬 {youtube_url}\n📸 {insta_url}"
     reserved_length = len(cta_line + base_links)
 
-    # Calculate how many characters are left for the poem
-    max_poem_chars = 280 - reserved_length
+    # Calculate how many characters are left for the poem (including the separating newline)
+    max_poem_chars = max(0, 280 - reserved_length - 1)
 
     # Trim poem if needed
     if len(poem_clean) > max_poem_chars:
@@ -585,107 +626,124 @@ def clean_text_for_tts(text: str) -> str:
     text = re.sub(r"http\S+", "", text)
     # Remove hashtags and mentions
     text = re.sub(r"[@#]\w+", "", text)
-    # Replace commas with period + space (to induce a pause without saying "comma")
-    text = text.replace(",", ". ")
-    # Remove other special characters except ., !, ?
-    text = re.sub(r"[^\w\s.!?]", "", text)
+    # Remove markdown/special characters while keeping natural punctuation (, . ! ? ' -)
+    text = re.sub(r"[^\w\s.,!?'\-]", "", text)
     # Collapse multiple spaces
     text = re.sub(r"\s{2,}", " ", text)
     return text.strip()
 
 
-# Function: Generate NatGeo Narration using Gemini
-def generate_video_narration(nature: str, video_url: str, metadata: dict) -> str:
+def fetch_wildlife_fact(topic: str) -> dict:
     """
-    Generates a Nat Geo-style narration for the given video metadata.
-    Narration duration is matched to video length (for TTS sync).
+    Fetches a real, verified summary from the free Wikipedia REST API
+    so Gemini grounds scripts in astonishing real wildlife facts.
     """
-    # Extract semantic context safely from original_url or title
+    slug = topic.strip().replace(" ", "_")
+    url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{requests.utils.quote(slug)}"
+    headers = {"User-Agent": "GeoSereneBot/1.0 (wildlife-educational-reels)"}
+    try:
+        resp = requests.get(url, headers=headers, timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            extract = (data.get("extract") or "").strip()
+            if extract:
+                return {
+                    "title": data.get("title", topic),
+                    "description": data.get("description", ""),
+                    "extract": extract[:900],
+                }
+    except Exception as e:
+        print(f"⚠️ Wikipedia fact lookup skipped for '{topic}': {e}")
+    return {"title": topic, "description": "", "extract": ""}
+
+
+# Function: Generate Viral Hook-First NatGeo Narration using Gemini
+def generate_video_narration(nature: str, video_url: str, metadata: dict, fact_context: dict = None) -> str:
+    """
+    Generates a high-retention, hook-first National Geographic-style narration
+    grounded in real wildlife facts and structured as Hook -> Escalation -> Loop.
+    """
     original_url = (metadata.get("original_url") or "").rstrip("/")
     raw_title = original_url.split("/")[-1] if "/" in original_url else metadata.get("title", "")
-    # Remove trailing hyphenated numeric ID if present
     cleaned_title = re.sub(r"-\d+$", "", raw_title).replace("-", " ")
-    content_hint = cleaned_title.strip().capitalize() or "A natural scene"
+    content_hint = cleaned_title.strip().capitalize() or nature
 
-    duration = min(metadata.get("duration") or 15, 60)  # cap narration target at 60s
+    duration = min(max(metadata.get("duration") or 25, 20), 40)
     tags = metadata.get("tags", [])
-    tag_text = ", ".join(tags) if tags else "natural elements"
+    tag_text = ", ".join(tags[:8]) if tags else "wild habitat"
 
-    # Estimate max narration word count
-    words_per_second = 2  # slightly slower than normal for TTS clarity
-    max_words = int(duration * words_per_second * 0.85)  # safety margin so voiceover finishes before video ends
+    fact_extract = (fact_context or {}).get("extract", "")
+    fact_block = f"\nVerified biological/scientific context:\n{fact_extract}\n" if fact_extract else ""
+
+    # Target ~2.3 words/sec for punchy, engaging documentary pacing
+    target_words = int(duration * 2.2)
+    target_words = max(45, min(target_words, 85))
 
     prompt = f"""
-You are a poetic and cinematic National Geographic narrator.
+You are a viral National Geographic short-form documentary writer.
 
-Write a narration of approximately {max_words} words (±10%) for a nature video based on the search query:
-"{nature}", with a title inferred as "{content_hint}", and featuring elements such as {tag_text}.
+Write a punchy, high-retention voiceover script of approximately {target_words} words (±10%) about: "{nature}" (scene hint: "{content_hint}", elements: {tag_text}).
+{fact_block}
+Strict Viral Structure:
+1. FIRST SENTENCE (0-2s HOOK): Start immediately with a shocking, counter-intuitive, or high-stakes fact or question. NEVER start with "In the heart of", "Bathed in", or generic scenery descriptions.
+2. MIDDLE (ESCALATION): Deliver 2-3 vivid, mind-blowing survival/behavioral facts in short, punchy sentences.
+3. FINAL SENTENCE (SEAMLESS LOOP): End with a thought that naturally leads right back into the opening hook so viewers rewatch.
 
-Narration should be timed for a {duration}-second voiceover (for Google TTS).
-The tone must be awe-inspiring, poetic, and educational — without mentioning video, camera, or film.
-Use imagery, emotion, and metaphor.
+Rules:
+- Do NOT mention video, camera, lens, or film.
+- Plain spoken text only (no stage directions, no brackets, no markdown, no emojis).
+- Keep sentences crisp and dramatic for a {duration}-second Reel/Short.
 
-Do not exceed the time limit. Use a slow, steady narration pace.
-
-Example:
-"Bathed in golden sunlight, the earth whispers in sandstone — shaped by eons, silent and eternal."
-
-Now write the narration.
+Now write the voiceover script.
     """
 
     messages = [
-        SystemMessage(content="You are a poetic narrator writing a National Geographic voiceover."),
+        SystemMessage(content="You write viral, scientifically grounded National Geographic short-form scripts."),
         HumanMessage(content=prompt)
     ]
 
     response = llm.invoke(messages)
-    narration = response.content.strip()
-
-    return narration
+    return response.content.strip()
 
 
 def generate_caption_from_narration(narration: str, title: str) -> str:
     """
-    Generates a clean Instagram caption from narration and title,
-    ensuring it's under 5000 characters and free of HTML/markdown formatting.
+    Generates an engagement-optimized Instagram/YouTube caption with a Save/Share CTA,
+    under 5000 characters and free of HTML/markdown formatting.
     """
     prompt = f"""
-You're a social media strategist for National Geographic.
+You're a viral social media strategist for National Geographic.
 
-Given the following:
-
+Given:
 TITLE: {title}
 NARRATION: {narration}
 
-Craft an Instagram caption with this structure:
-
-1. Start with the cinematic TITLE (title case, no formatting or HTML)
-2. Follow with the poetic narration
-3. Add a short, emotional call-to-action like:
-   “Follow @geoserene for more stories written by wind and time.”
-4. Use an emoji divider like: 🌍🌿✨ ———— ✨🌿🌍
-5. End with 15–25 relevant, trending hashtags, space-separated (not line-separated)
+Craft a caption with this exact structure:
+1. Start with a bold 1-line hook/title (plain text, title case, no HTML or markdown)
+2. Add a 2-sentence intriguing takeaway or bonus fact from the narration
+3. Add a high-engagement Save/Share CTA like:
+   "Save this so you don't forget it, and share it with someone who loves wildlife. Follow @geoserene for daily wild discoveries."
+4. Use a clean divider: 🌍🌿✨ ———— ✨🌿🌍
+5. End with 12-18 relevant, space-separated hashtags (include #wildlife #natgeo #naturefacts #shorts #reels)
 
 Rules:
-- Do NOT include any markdown or HTML (e.g., no <center>, **, etc.)
-- Keep the entire caption under 5000 characters.
+- Do NOT include any markdown or HTML (no <center>, **, etc.)
+- Keep the entire caption under 2200 characters for optimal Reel readability.
 - Return only the full caption.
     """
 
     messages = [
-        SystemMessage(content="You're a seasoned social media strategist for National Geographic."),
+        SystemMessage(content="You're a seasoned viral social media strategist for National Geographic."),
         HumanMessage(content=prompt)
     ]
 
     response = llm.invoke(messages)
     caption = response.content.strip()
 
-    # ✨ Cleanup: Strip HTML/markdown if any slipped through
-    caption = re.sub(r"<[^>]+>", "", caption)        # Remove HTML tags
-    caption = re.sub(r"[*_~`]", "", caption)         # Remove markdown (*, _, etc.)
+    caption = re.sub(r"<[^>]+>", "", caption)
+    caption = re.sub(r"[*_~`]", "", caption)
     caption = re.sub(r"['\"“”]", lambda m: m.group(0).strip(), caption)
 
-    # ✨ Enforce Instagram's 5000-char limit
     if len(caption) > 4990:
         caption = caption[:4990].rsplit(" ", 1)[0] + "…"
 
@@ -694,109 +752,106 @@ Rules:
 
 def generate_title_from_narration(narration: str) -> str:
     """
-    Generates a powerful, cinematic title (3–7 words) from a poetic nature narration.
-    Returns clean, plain text suitable for YouTube or Instagram.
+    Generates a curiosity-driven, searchable title (4-9 words, <=65 chars)
+    suitable for YouTube Shorts and Instagram Reels.
     """
     prompt = f"""
-You are a National Geographic headline writer.
+You are a viral YouTube Shorts & National Geographic headline writer.
 
-Given the following poetic narration:
-
+Given this narration:
 \"\"\"{narration}\"\"\"
 
-Generate a single, cinematic and emotional title (3 to 7 words max) that captures the essence of the scene.
-It should feel powerful, poetic, and timeless — like a documentary title.
-Avoid generic terms like "Nature", "Video", or "Scenery".
+Write ONE curiosity-driven, search-friendly title (4 to 8 words, under 60 characters) that makes people stop scrolling and click.
+Include the specific animal or phenomenon name when possible.
+Avoid generic titles like "Beauty of Nature" or "Silent Wilderness".
 
 Return only the title. No HTML. No Markdown. No quotation marks.
     """
 
     messages = [
-        SystemMessage(content="You are a National Geographic headline writer."),
+        SystemMessage(content="You are a viral wildlife documentary headline writer."),
         HumanMessage(content=prompt)
     ]
 
     response = llm.invoke(messages)
     raw_title = response.content.strip()
 
-    # Remove any quotes, HTML tags, or markdown remnants
-    clean_title = re.sub(r"<[^>]+>", "", raw_title)           # remove HTML tags
-    clean_title = re.sub(r"[*_~`]", "", clean_title)          # remove markdown characters
-    clean_title = re.sub(r"['\"“”]", "", clean_title)         # remove quote characters
+    clean_title = re.sub(r"<[^>]+>", "", raw_title)
+    clean_title = re.sub(r"[*_~`]", "", clean_title)
+    clean_title = re.sub(r"['\"“”]", "", clean_title)
     return clean_title.strip()
 
 
-def fetch_pexels_video(query="nature", min_duration=15, max_duration=60):
+def _score_video_candidate(width: int, height: int) -> int:
+    """Scores a video file preferring 1080p vertical (portrait) HD clips."""
+    resolution = (width or 0) * (height or 0)
+    if resolution < 1280 * 720:
+        return 0
+    is_vertical = (height or 0) > (width or 0)
+    return min(resolution, 1920 * 1080) + (10_000_000 if is_vertical else 0)
+
+
+def fetch_pexels_videos(query="wildlife", min_duration=4, max_duration=60, max_results=5):
     if not PEXELS_API_KEY:
         print("Pexels API key not configured.")
-        return None, None
+        return []
 
     headers = {"Authorization": PEXELS_API_KEY}
     params = {"query": query, "per_page": 30, "orientation": "portrait"}
     url = "https://api.pexels.com/videos/search"
-    resp = requests.get(url, headers=headers, params=params, timeout=HTTP_TIMEOUT)
+    try:
+        resp = requests.get(url, headers=headers, params=params, timeout=HTTP_TIMEOUT)
+    except Exception as e:
+        print(f"Pexels request error: {e}")
+        return []
 
     if resp.status_code != 200:
         print(f"Pexels error: {resp.status_code}")
-        return None, None
+        return []
 
     videos = [
         v for v in resp.json().get("videos", [])
         if min_duration <= v.get("duration", 0) <= max_duration
     ]
-    if not videos:
-        print(f"No Pexels videos found between {min_duration}s and {max_duration}s.")
-        return None, None
-
-    # Shuffle videos so repeated queries still yield diverse results
     random.shuffle(videos)
 
-    best_video_file = None
-    best_video_meta = None
-    best_quality = 0
-
+    candidates = []
     for video in videos:
+        best_vf = None
+        best_score = 0
         for vf in video.get("video_files", []):
             link = vf.get("link")
             if not link or is_duplicate_video(link):
                 continue
-            width = vf.get("width") or 0
-            height = vf.get("height") or 0
-            resolution = width * height
-            is_vertical = height > width
-
-            # Prefer HD/FullHD vertical videos; cap preference at 1080p so 4K horizontal never beats 1080p vertical
-            if resolution >= 1280 * 720:
-                res_score = min(resolution, 1920 * 1080)
-                score = res_score + (10_000_000 if is_vertical else 0)
-                if score > best_quality:
-                    best_quality = score
-                    best_video_file = vf
-                    best_video_meta = video
-
-    if not best_video_file:
-        print("No suitable unique HD video found on Pexels.")
-        return None, None
-
-    print("📱 Using vertical video (portrait mode)" if best_video_file["height"] > best_video_file["width"]
-          else "🖥️ Using horizontal video (landscape mode)")
-
-    metadata = {
-        "title": best_video_meta.get("url", "").rstrip("/").split("/")[-1].replace("-", " "),
-        "duration": best_video_meta.get("duration"),
-        "width": best_video_file.get("width"),
-        "height": best_video_file.get("height"),
-        "tags": [tag["title"] for tag in best_video_meta.get("tags", []) if isinstance(tag, dict) and "title" in tag],
-        "original_url": best_video_meta.get("url")
-    }
-
-    return best_video_file["link"], metadata
+            score = _score_video_candidate(vf.get("width") or 0, vf.get("height") or 0)
+            if score > best_score:
+                best_score = score
+                best_vf = vf
+        if best_vf:
+            metadata = {
+                "title": video.get("url", "").rstrip("/").split("/")[-1].replace("-", " "),
+                "duration": video.get("duration"),
+                "width": best_vf.get("width"),
+                "height": best_vf.get("height"),
+                "tags": [tag["title"] for tag in video.get("tags", []) if isinstance(tag, dict) and "title" in tag],
+                "original_url": video.get("url"),
+                "source": "pexels",
+            }
+            candidates.append((best_vf["link"], metadata))
+            if len(candidates) >= max_results:
+                break
+    return candidates
 
 
-def fetch_pixabay_video(query="nature", min_duration=15, max_duration=60):
+def fetch_pexels_video(query="nature", min_duration=15, max_duration=60):
+    results = fetch_pexels_videos(query=query, min_duration=min_duration, max_duration=max_duration, max_results=1)
+    return results[0] if results else (None, None)
+
+
+def fetch_pixabay_videos(query="wildlife", min_duration=4, max_duration=60, max_results=5):
     if not PIXABAY_API_KEY:
         print("Pixabay API key not configured.")
-        return None, None
+        return []
 
     params = {
         "key": PIXABAY_API_KEY,
@@ -805,89 +860,257 @@ def fetch_pixabay_video(query="nature", min_duration=15, max_duration=60):
         "per_page": 30
     }
     url = "https://pixabay.com/api/videos/"
-    resp = requests.get(url, params=params, timeout=HTTP_TIMEOUT)
+    try:
+        resp = requests.get(url, params=params, timeout=HTTP_TIMEOUT)
+    except Exception as e:
+        print(f"Pixabay request error: {e}")
+        return []
 
     if resp.status_code != 200:
         print(f"Pixabay error: {resp.status_code}")
-        return None, None
+        return []
 
     hits = [
         v for v in resp.json().get("hits", [])
         if min_duration <= v.get("duration", 0) <= max_duration
     ]
-    if not hits:
-        print(f"No Pixabay videos found between {min_duration}s and {max_duration}s.")
-        return None, None
-
     random.shuffle(hits)
 
-    best_video_file = None
-    best_video_meta = None
-    best_quality = 0
-
+    candidates = []
     for video in hits:
+        best_vf = None
+        best_score = 0
         for _, vf in video.get("videos", {}).items():
             link = vf.get("url")
             if not link or is_duplicate_video(link):
                 continue
-            width = vf.get("width") or 0
-            height = vf.get("height") or 0
-            resolution = width * height
-            is_vertical = height > width
+            score = _score_video_candidate(vf.get("width") or 0, vf.get("height") or 0)
+            if score > best_score:
+                best_score = score
+                best_vf = vf
+        if best_vf:
+            metadata = {
+                "title": video.get("tags", ""),
+                "duration": video.get("duration"),
+                "width": best_vf.get("width"),
+                "height": best_vf.get("height"),
+                "tags": [t.strip() for t in video.get("tags", "").split(",") if t.strip()],
+                "original_url": video.get("pageURL"),
+                "source": "pixabay",
+            }
+            candidates.append((best_vf["url"], metadata))
+            if len(candidates) >= max_results:
+                break
+    return candidates
 
-            if resolution >= 1280 * 720:
-                res_score = min(resolution, 1920 * 1080)
-                score = res_score + (10_000_000 if is_vertical else 0)
-                if score > best_quality:
-                    best_quality = score
-                    best_video_file = vf
-                    best_video_meta = video
 
-    if not best_video_file:
-        print("No suitable unique HD video found on Pixabay.")
-        return None, None
+def fetch_pixabay_video(query="nature", min_duration=15, max_duration=60):
+    results = fetch_pixabay_videos(query=query, min_duration=min_duration, max_duration=max_duration, max_results=1)
+    return results[0] if results else (None, None)
 
-    print("📱 Using vertical video (portrait mode)" if best_video_file["height"] > best_video_file["width"]
-          else "🖥️ Using horizontal video (landscape mode)")
 
-    metadata = {
-        "title": best_video_meta.get("tags", ""),
-        "duration": best_video_meta.get("duration"),
-        "width": best_video_file["width"],
-        "height": best_video_file["height"],
-        "tags": [t.strip() for t in best_video_meta.get("tags", "").split(",") if t.strip()],
-        "original_url": best_video_meta.get("pageURL")
+def fetch_nasa_videos(query="earth", max_results=3):
+    """
+    Free public-domain video search via NASA Image and Video Library API (no key required).
+    """
+    url = "https://images-api.nasa.gov/search"
+    try:
+        resp = requests.get(url, params={"q": query, "media_type": "video"}, timeout=20)
+        if resp.status_code != 200:
+            return []
+        items = resp.json().get("collection", {}).get("items", [])
+        random.shuffle(items)
+        candidates = []
+        for item in items[:10]:
+            nasa_id = (item.get("data") or [{}])[0].get("nasa_id")
+            title = (item.get("data") or [{}])[0].get("title", query)
+            if not nasa_id:
+                continue
+            asset_resp = requests.get(f"https://images-api.nasa.gov/asset/{nasa_id}", timeout=15)
+            if asset_resp.status_code != 200:
+                continue
+            mp4_links = [
+                a.get("href") for a in asset_resp.json().get("collection", {}).get("items", [])
+                if (a.get("href") or "").endswith(".mp4") and not is_duplicate_video(a.get("href"))
+            ]
+            if mp4_links:
+                candidates.append((mp4_links[0], {
+                    "title": title,
+                    "duration": 20,
+                    "tags": [query, "nasa", "earth"],
+                    "original_url": f"https://images.nasa.gov/details-{nasa_id}",
+                    "source": "nasa",
+                }))
+                if len(candidates) >= max_results:
+                    break
+        return candidates
+    except Exception as e:
+        print(f"⚠️ NASA video lookup failed: {e}")
+        return []
+
+
+def fetch_internet_archive_videos(query="wildlife", max_results=3):
+    """
+    Free public-domain wildlife/nature video search via Internet Archive API (no key required).
+    """
+    search_url = "https://archive.org/advancedsearch.php"
+    params = {
+        "q": f"({query}) AND mediatype:(movies)",
+        "fl[]": ["identifier", "title"],
+        "rows": 15,
+        "page": 1,
+        "output": "json",
     }
+    try:
+        resp = requests.get(search_url, params=params, timeout=20)
+        if resp.status_code != 200:
+            return []
+        docs = resp.json().get("response", {}).get("docs", [])
+        random.shuffle(docs)
+        candidates = []
+        for doc in docs[:8]:
+            identifier = doc.get("identifier")
+            if not identifier:
+                continue
+            meta_resp = requests.get(f"https://archive.org/metadata/{identifier}", timeout=15)
+            if meta_resp.status_code != 200:
+                continue
+            files = meta_resp.json().get("files", [])
+            mp4_files = [
+                f for f in files
+                if (f.get("name") or "").lower().endswith(".mp4")
+                and int(f.get("size") or 0) < 80_000_000
+            ]
+            if mp4_files:
+                dl_url = f"https://archive.org/download/{identifier}/{mp4_files[0]['name']}"
+                if not is_duplicate_video(dl_url):
+                    candidates.append((dl_url, {
+                        "title": doc.get("title", query),
+                        "duration": 25,
+                        "tags": [query, "wildlife", "archive"],
+                        "original_url": f"https://archive.org/details/{identifier}",
+                        "source": "internet_archive",
+                    }))
+                    if len(candidates) >= max_results:
+                        break
+        return candidates
+    except Exception as e:
+        print(f"⚠️ Internet Archive video lookup failed: {e}")
+        return []
 
-    return best_video_file["url"], metadata
+
+def fetch_wikimedia_videos(query="wildlife", max_results=3):
+    """
+    Free Creative Commons / Public Domain video search via Wikimedia Commons API (no key required).
+    """
+    url = "https://commons.wikimedia.org/w/api.php"
+    params = {
+        "action": "query",
+        "generator": "search",
+        "gsrsearch": f"{query} filetype:video",
+        "gsrnamespace": 6,
+        "gsrlimit": 10,
+        "prop": "imageinfo",
+        "iiprop": "url|mime|size",
+        "format": "json",
+    }
+    headers = {"User-Agent": "GeoSereneBot/1.0 (wildlife-educational-reels)"}
+    try:
+        resp = requests.get(url, params=params, headers=headers, timeout=20)
+        if resp.status_code != 200:
+            return []
+        pages = list((resp.json().get("query") or {}).get("pages", {}).values())
+        random.shuffle(pages)
+        candidates = []
+        for page in pages:
+            info = (page.get("imageinfo") or [{}])[0]
+            file_url = info.get("url")
+            size = info.get("size") or 0
+            if file_url and size < 80_000_000 and not is_duplicate_video(file_url):
+                candidates.append((file_url, {
+                    "title": page.get("title", query).replace("File:", ""),
+                    "duration": 20,
+                    "tags": [query, "wikimedia", "wildlife"],
+                    "original_url": info.get("descriptionurl", file_url),
+                    "source": "wikimedia",
+                }))
+                if len(candidates) >= max_results:
+                    break
+        return candidates
+    except Exception as e:
+        print(f"⚠️ Wikimedia Commons video lookup failed: {e}")
+        return []
 
 
 def fetch_nature_video(query="nature"):
     """
-    Tries Pexels first, then falls back to Pixabay.
+    Tries Pexels, Pixabay, Internet Archive, Wikimedia Commons, and NASA in order.
     """
-    video_url, metadata = fetch_pexels_video(query)
-    if video_url:
-        print("✅ Fetched video from Pexels:", video_url)
-        return video_url, metadata
+    for fetcher in (fetch_pexels_video, fetch_pixabay_video):
+        video_url, metadata = fetcher(query)
+        if video_url:
+            print(f"✅ Fetched video from {metadata.get('source', 'stock')}: {video_url}")
+            return video_url, metadata
 
-    video_url, metadata = fetch_pixabay_video(query)
-    if video_url:
-        print("✅ Fetched video from Pixabay:", video_url)
-        return video_url, metadata
+    for free_fetcher in (fetch_wikimedia_videos, fetch_internet_archive_videos, fetch_nasa_videos):
+        results = free_fetcher(query, max_results=1)
+        if results:
+            video_url, metadata = results[0]
+            print(f"✅ Fetched video from {metadata.get('source', 'free-archive')}: {video_url}")
+            return video_url, metadata
 
     raise Exception("❌ Failed to fetch a nature video from all sources.")
 
 
-def download_video(video_url: str, output_dir="videos") -> str:
+def fetch_unique_nature_clips(attempts=5, max_clips=5):
+    """
+    Fetches 1 to max_clips unique video clips for a wildlife topic so the final Reel
+    can use fast 2.5-3.5s visual cuts instead of a single static shot.
+    """
+    for attempt in range(attempts):
+        query = random.choice(WILDLIFE_TOPICS)
+        print(f"🔁 Attempt {attempt + 1}: Gathering clips for '{query}'")
+        clips = []
+        seen_urls = set()
+
+        for fetcher in (
+            lambda q: fetch_pexels_videos(q, min_duration=4, max_duration=60, max_results=max_clips),
+            lambda q: fetch_pixabay_videos(q, min_duration=4, max_duration=60, max_results=max_clips),
+            lambda q: fetch_wikimedia_videos(q, max_results=3),
+            lambda q: fetch_internet_archive_videos(q, max_results=3),
+            lambda q: fetch_nasa_videos(q, max_results=2),
+        ):
+            if len(clips) >= max_clips:
+                break
+            for url, meta in fetcher(query):
+                if url and url not in seen_urls and not is_duplicate_video(url):
+                    seen_urls.add(url)
+                    clips.append((url, meta))
+                    if len(clips) >= max_clips:
+                        break
+
+        if clips:
+            for url, _ in clips:
+                save_video_to_history(url)
+            print(f"✅ Found {len(clips)} unique clip(s) for '{query}'.")
+            return query, clips
+
+        print(f"⚠️ No unique clips found for '{query}', retrying...")
+
+    raise Exception("❌ Failed to find unique clips after multiple attempts.")
+
+
+def download_video(video_url: str, output_dir="videos", suffix: str = "") -> str:
     os.makedirs(output_dir, exist_ok=True)
-    file_name = f"nature_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
+    ext = ".mp4"
+    file_name = f"nature_{datetime.now().strftime('%Y%m%d_%H%M%S')}{suffix}{ext}"
     local_path = os.path.join(output_dir, file_name)
+    headers = {"User-Agent": "GeoSereneBot/1.0 (wildlife-educational-reels)"}
     try:
-        resp = requests.get(video_url, stream=True, timeout=HTTP_TIMEOUT)
+        resp = requests.get(video_url, stream=True, headers=headers, timeout=HTTP_TIMEOUT)
         resp.raise_for_status()
         with open(local_path, "wb") as f:
-            for chunk in resp.iter_content(chunk_size=1024 * 1024):  # 1MB
+            for chunk in resp.iter_content(chunk_size=1024 * 1024):
                 if chunk:
                     f.write(chunk)
         print(f"✅ Video saved to {local_path}")
@@ -897,31 +1120,53 @@ def download_video(video_url: str, output_dir="videos") -> str:
         return ""
 
 
-def synthesize_text(text, output_path="output.mp3", selected_voice=None):
-    # Clean text to avoid unwanted spoken characters
+async def _synthesize_edge_with_subtitles(clean_text: str, selected_voice: str, output_path: str) -> list:
+    """Streams edge-tts audio + WordBoundary events to capture exact caption timestamps."""
+    communicate = edge_tts.Communicate(clean_text, selected_voice, rate="-4%", boundary="WordBoundary")
+    word_events = []
+    with open(output_path, "wb") as audio_file:
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                audio_file.write(chunk["data"])
+            elif chunk["type"] == "WordBoundary":
+                start_s = chunk["offset"] / 10_000_000.0
+                dur_s = chunk["duration"] / 10_000_000.0
+                word_events.append({
+                    "text": chunk["text"],
+                    "start": start_s + 0.1,  # match 100ms adelay lead-in
+                    "end": start_s + dur_s + 0.1,
+                })
+    return word_events
+
+
+def synthesize_text(text, output_path="output.mp3", selected_voice=None, subtitle_path="captions.ass"):
+    """
+    Synthesizes speech using Edge Neural TTS and generates an ASS subtitle file
+    from WordBoundary timestamps for free burned-in captions.
+    Returns (audio_path, subtitle_path_or_empty).
+    """
     clean_text = clean_text_for_tts(text)
 
-    # Pick random voice if not provided
     if not selected_voice:
         selected_voice = random.choice(voice_names)
 
     try:
-        communicate = edge_tts.Communicate(clean_text, selected_voice)
-        asyncio.run(communicate.save(output_path))
-        print(f"✅ Audio content written to {output_path} using Edge Neural TTS voice: {selected_voice}")
-        return output_path
+        word_events = asyncio.run(_synthesize_edge_with_subtitles(clean_text, selected_voice, output_path))
+        generated_sub = generate_ass_subtitles(word_events, subtitle_path) if word_events else ""
+        print(f"✅ Audio written to {output_path} ({selected_voice}), captions: {bool(generated_sub)}")
+        return output_path, generated_sub
     except Exception as e:
         print(f"⚠️ Edge TTS failed ({e}), falling back to gTTS...")
         from gtts import gTTS
         tts = gTTS(text=clean_text, lang="en", tld="co.uk")
         tts.save(output_path)
-        print(f"✅ Audio content written to {output_path} using gTTS fallback.")
-        return output_path
+        print(f"✅ Audio written to {output_path} using gTTS fallback.")
+        return output_path, ""
 
 
 def fetch_unique_nature_video(attempts=5):
     for attempt in range(attempts):
-        query = random.choice(NATURE_QUERIES)
+        query = random.choice(WILDLIFE_TOPICS)
         print(f"🔁 Attempt {attempt+1}: Trying query '{query}'")
         try:
             video_url, metadata = fetch_nature_video(query=query)
@@ -939,33 +1184,42 @@ def fetch_unique_nature_video(attempts=5):
 # Main execution
 if __name__ == "__main__":
     try:
-        random_query, video_url, metadata = fetch_unique_nature_video()
-        print(f"Fetched video URL: {video_url}")
-        print(f"Video Metadata: {metadata}")
+        random_query, clip_candidates = fetch_unique_nature_clips()
+        primary_url, primary_metadata = clip_candidates[0]
+        print(f"Topic: {random_query} | Clips fetched: {len(clip_candidates)}")
     except Exception as e:
         print(str(e))
         sys.exit(1)
 
-    video_path = download_video(video_url)
-    if not video_path:
+    video_paths = []
+    for idx, (clip_url, _) in enumerate(clip_candidates):
+        downloaded = download_video(clip_url, suffix=f"_{idx}")
+        if downloaded:
+            video_paths.append(downloaded)
+
+    if not video_paths:
         sys.exit(1)
 
-    narration = generate_video_narration(random_query, video_url, metadata)
+    fact_context = fetch_wildlife_fact(random_query)
+    narration = generate_video_narration(random_query, primary_url, primary_metadata, fact_context=fact_context)
     print(f"Narration:\n{narration}")
 
-    voiceover_path = synthesize_text(re.sub(r"[*_#~]", "", narration).strip(), "voiceover.mp3")
+    voiceover_path, subtitle_path = synthesize_text(
+        re.sub(r"[*_#~]", "", narration).strip(),
+        "voiceover.mp3",
+        subtitle_path=os.path.join(BASE_DIR, "captions.ass"),
+    )
 
-    # Generate title
     title = generate_title_from_narration(narration)
     print(f" title-->{title}")
-    # Generate caption
     caption = generate_caption_from_narration(narration, title)
     print(f"Generated caption: {caption}")
 
-    # 1. Make Video
-    final_video_path = combine_video_with_music_and_voiceover(video_path, voiceover_path)
+    # 1. Make Video (multi-clip cuts + immediate voiceover + burned-in captions)
+    final_video_path = combine_video_with_music_and_voiceover(
+        video_paths, voiceover_path, subtitle_path=subtitle_path
+    )
 
-    # ✅ Validate final video
     if not final_video_path or not os.path.exists(final_video_path):
         raise FileNotFoundError("❌ Final narrated video was not generated correctly.")
 
@@ -983,14 +1237,15 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"❌ Instagram Reel upload failed: {e}")
 
-    # 3. Publish to YouTube
-    tags_list = [
-        "nature", "natgeo", "wildlife", "adventure", "travel",
-        "explore", "beautiful", "amazing", "unforgettable",
-        "naturelovers", "naturephotography"
-    ]
+    # 3. Publish to YouTube Shorts
+    topic_words = [w.lower() for w in re.findall(r"[a-zA-Z]+", random_query) if len(w) > 2]
+    tags_list = list(dict.fromkeys(topic_words + [
+        "wildlife", "natgeo", "animalfacts", "nature", "shorts",
+        "wildlifeconservation", "wildanimals", "earth", "documentary"
+    ]))
+    yt_title = title if "#shorts" in title.lower() else f"{title[:88]} #Shorts"
     try:
-        yt_id = upload_video_to_youtube(final_video_path, title=title, description=caption, tags=tags_list)
+        yt_id = upload_video_to_youtube(final_video_path, title=yt_title, description=caption, tags=tags_list)
         yt_url = f"https://youtu.be/{yt_id}"
         published_any = True
         print(f"✅ YouTube Shorts uploaded: {yt_url}")
@@ -1007,6 +1262,7 @@ if __name__ == "__main__":
     if not published_any:
         print("❌ All publishing targets failed.")
         sys.exit(1)
+
 
     
 
