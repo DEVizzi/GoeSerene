@@ -2,27 +2,9 @@ name: Auto NatGeo Reel Bot
 
 on:
   schedule:
-    # Monday to Sunday — 9:30 AM IST and 7:00 PM IST
-    - cron: "0 4 * * 1"   # 9:30 AM IST Monday
-    - cron: "30 13 * * 1" # 7:00 PM IST Monday
-
-    - cron: "0 4 * * 2"   # 9:30 AM IST Tuesday
-    - cron: "30 13 * * 2" # 7:00 PM IST Tuesday
-
-    - cron: "0 4 * * 3"   # 9:30 AM IST Wednesday
-    - cron: "30 13 * * 3" # 7:00 PM IST Wednesday
-
-    - cron: "0 4 * * 4"   # 9:30 AM IST Thursday
-    - cron: "30 13 * * 4" # 7:00 PM IST Thursday
-
-    - cron: "0 4 * * 5"   # 9:30 AM IST Friday
-    - cron: "30 13 * * 5" # 7:00 PM IST Friday
-
-    - cron: "0 4 * * 6"   # 9:30 AM IST Saturday
-    - cron: "30 13 * * 6" # 7:00 PM IST Saturday
-
-    - cron: "0 4 * * 0"   # 9:30 AM IST Sunday
-    - cron: "30 13 * * 0" # 7:00 PM IST Sunday
+    # Twice daily at global peak engagement windows (IST + US/EU overlap)
+    - cron: "30 13 * * *" # 1:30 PM UTC = 7:00 PM IST / 8:30 AM EST
+    - cron: "0 0 * * *"   # 00:00 UTC = 5:30 AM IST / 7:00 PM EST
 
   workflow_dispatch:
 
@@ -71,6 +53,9 @@ jobs:
           pip install -r requirements.txt
           sudo apt-get update
           sudo apt-get install -y ffmpeg
+
+      - name: Run unit tests
+        run: python -m unittest -v test_natgeo_bot.py
 
       - name: Run the NatGeo cinematic bot
         run: python natGeo_bot.py

@@ -147,12 +147,18 @@ def _format_ass_time(seconds: float) -> str:
     return f"{hours}:{minutes:02d}:{secs:05.2f}"
 
 
-def generate_ass_subtitles(word_events: list, ass_path: str, words_per_chunk: int = 2) -> str:
+def generate_ass_subtitles(
+    word_events: list,
+    ass_path: str,
+    words_per_chunk: int = 2,
+    hook_banner: str = "",
+) -> str:
     """
     Generates a bold, high-contrast .ass subtitle file from edge-tts WordBoundary events.
     - Uses WrapStyle: 0 (smart wrapping), Fontsize: 52, and 120px side margins so text
       NEVER overflows the 1080x1920 vertical frame.
     - Splits chunks at natural speech pauses (>0.18s gap) so sentences never bleed together.
+    - Optionally displays a 2.6s top hook banner to stop scrollers in the first 2 seconds.
     """
     if not word_events:
         return ""
@@ -170,6 +176,8 @@ def generate_ass_subtitles(word_events: list, ass_path: str, words_per_chunk: in
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
         "Style: Default,Arial,52,&H00FFFFFF,&H0000FFFF,&H00000000,&H80000000,"
         "-1,0,0,0,100,100,1,0,1,4,2,2,120,120,420,1\n"
+        "Style: Hook,Arial,44,&H0000D7FF,&H00FFFFFF,&H00000000,&HB0000000,"
+        "-1,0,0,0,100,100,1,0,3,6,0,8,120,120,230,1\n"
         "\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
@@ -191,6 +199,12 @@ def generate_ass_subtitles(word_events: list, ass_path: str, words_per_chunk: in
         chunks.append(current)
 
     lines = [header]
+    if hook_banner:
+        clean_hook = hook_banner.strip().replace("{", "(").replace("}", ")").upper()
+        if len(clean_hook) > 55:
+            clean_hook = clean_hook[:52].rsplit(" ", 1)[0] + "..."
+        lines.append(f"Dialogue: 1,0:00:00.00,0:00:02.60,Hook,,0,0,0,,{clean_hook}\n")
+
     for i, chunk in enumerate(chunks):
         start_s = chunk[0]["start"]
         end_s = max(chunk[-1]["end"] + 0.06, start_s + 0.20)
@@ -292,6 +306,7 @@ def combine_video_with_music_and_voiceover(
         "[0:v]fps=30,"
         "scale=1080:1920:force_original_aspect_ratio=increase:out_color_matrix=bt709,"
         "crop=1080:1920,setsar=1,"
+        "eq=contrast=1.05:saturation=1.12,"
         "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
     )
     if subtitle_path and os.path.exists(subtitle_path) and _ffmpeg_has_filter("ass"):
@@ -411,7 +426,7 @@ def upload_video_to_youtube(video_path: str, title: str, description: str, tags:
             "title": title,
             "description": description,
             "tags": tags or [],
-            "categoryId": "22"
+            "categoryId": "15"
         },
         "status": {
             "privacyStatus": "public",
@@ -1179,7 +1194,13 @@ async def _synthesize_edge_with_subtitles(clean_text: str, selected_voice: str, 
     return word_events
 
 
-def synthesize_text(text, output_path="output.mp3", selected_voice=None, subtitle_path="captions.ass"):
+def synthesize_text(
+    text,
+    output_path="output.mp3",
+    selected_voice=None,
+    subtitle_path="captions.ass",
+    hook_banner: str = "",
+):
     """
     Synthesizes speech using Edge Neural TTS and generates an ASS subtitle file
     from WordBoundary timestamps for free burned-in captions.
@@ -1192,7 +1213,10 @@ def synthesize_text(text, output_path="output.mp3", selected_voice=None, subtitl
 
     try:
         word_events = asyncio.run(_synthesize_edge_with_subtitles(clean_text, selected_voice, output_path))
-        generated_sub = generate_ass_subtitles(word_events, subtitle_path) if word_events else ""
+        generated_sub = (
+            generate_ass_subtitles(word_events, subtitle_path, hook_banner=hook_banner)
+            if word_events else ""
+        )
         print(f"✅ Audio written to {output_path} ({selected_voice}), captions: {bool(generated_sub)}")
         return output_path, generated_sub
     except Exception as e:
@@ -1244,16 +1268,17 @@ if __name__ == "__main__":
     narration = generate_video_narration(random_query, primary_url, primary_metadata, fact_context=fact_context)
     print(f"Narration:\n{narration}")
 
-    voiceover_path, subtitle_path = synthesize_text(
-        re.sub(r"[*_#~]", "", narration).strip(),
-        "voiceover.mp3",
-        subtitle_path=os.path.join(BASE_DIR, "captions.ass"),
-    )
-
     title = generate_title_from_narration(narration)
     print(f" title-->{title}")
     caption = generate_caption_from_narration(narration, title)
     print(f"Generated caption: {caption}")
+
+    voiceover_path, subtitle_path = synthesize_text(
+        re.sub(r"[*_#~]", "", narration).strip(),
+        "voiceover.mp3",
+        subtitle_path=os.path.join(BASE_DIR, "captions.ass"),
+        hook_banner=title,
+    )
 
     # 1. Make Video (multi-clip cuts + immediate voiceover + burned-in captions)
     final_video_path = combine_video_with_music_and_voiceover(
