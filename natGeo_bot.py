@@ -92,26 +92,26 @@ llm = ChatGoogleGenerativeAI(
 
 
 WILDLIFE_TOPICS = [
-    # High-Curiosity Predators & Marine Life
-    "orca", "great white shark", "humpback whale", "mantis shrimp", "mimic octopus",
-    "blue-ringed octopus", "snow leopard", "cheetah", "peregrine falcon", "bald eagle",
-    "honey badger", "komodo dragon", "king cobra", "polar bear", "grizzly bear",
-    "wolf pack", "bengal tiger", "african lion", "harpy eagle", "osprey catching fish",
-    "electric eel", "archerfish", "sailfish", "moray eel", "sea otter",
-    "green sea turtle", "manta ray", "bioluminescent jellyfish", "cuttlefish", "nautilus",
+    # Iconic Marine & Aquatic Wildlife
+    "orca", "great white shark", "humpback whale", "octopus", "jellyfish",
+    "sea turtle", "manta ray", "dolphin", "sea otter", "seahorse",
+    "clownfish", "stingray", "hammerhead shark", "blue whale", "seal",
 
-    # Bizarre & Clever Animal Behaviors
-    "lyrebird", "bowerbird", "weaver bird", "albatross", "emperor penguin",
-    "arctic fox", "fennec fox", "red panda", "axolotl", "tardigrade",
-    "chameleon", "leaf-tailed gecko", "poison dart frog", "glass frog", "wood frog",
-    "leafcutter ant", "praying mantis", "monarch butterfly", "firefly", "scarab beetle",
-    "beaver dam", "meerkat", "platypus", "pangolin", "sloth",
-    "hummingbird", "kingfisher", "barn owl", "snowy owl", "flamingo",
+    # Iconic Land Predators & Mammals
+    "snow leopard", "cheetah", "bengal tiger", "lion", "jaguar",
+    "polar bear", "grizzly bear", "wolf", "arctic fox", "red fox",
+    "red panda", "elephant", "giraffe", "gorilla", "orangutan",
+    "sloth", "koala", "kangaroo", "bison", "rhino", "hippo", "meerkat",
 
-    # Dramatic Natural Phenomena & Extreme Habitats
-    "aurora borealis", "volcanic lightning", "underwater volcano", "bioluminescent bay",
-    "monarch butterfly migration", "wildebeest migration", "sardine run", "coral spawning",
-    "glacier calving", "supercell thunderstorm", "desert sandstorm", "hydrothermal vent",
+    # Striking Birds, Reptiles, Amphibians & Insects
+    "bald eagle", "peregrine falcon", "snowy owl", "barn owl", "hummingbird",
+    "kingfisher", "flamingo", "penguin", "peacock", "toucan", "macaw",
+    "chameleon", "komodo dragon", "iguana", "crocodile", "tree frog",
+    "praying mantis", "monarch butterfly", "honeybee", "dragonfly",
+
+    # Dramatic Natural Phenomena
+    "aurora borealis", "volcano lava", "lightning storm", "glacier",
+    "coral reef", "bioluminescent waves", "waterfall", "sandstorm",
 ]
 
 # Keep backwards-compatible alias
@@ -738,20 +738,19 @@ def generate_video_narration(nature: str, video_url: str, metadata: dict, fact_c
     cleaned_title = re.sub(r"-\d+$", "", raw_title).replace("-", " ")
     content_hint = cleaned_title.strip().capitalize() or nature
 
-    duration = min(max(metadata.get("duration") or 25, 20), 35)
+    duration = min(max(metadata.get("duration") or 20, 12), 32)
     tags = metadata.get("tags", [])
     tag_text = ", ".join(tags[:8]) if tags else "wild habitat"
 
     fact_extract = (fact_context or {}).get("extract", "")
     fact_block = f"\nVerified biological/scientific context:\n{fact_extract}\n" if fact_extract else ""
 
-    target_words = int(duration * 2.1)
-    target_words = max(45, min(target_words, 75))
+    target_words = max(28, min(int(duration * 2.1), 68))
 
     prompt = f"""
 You are a viral National Geographic short-form documentary writer.
 
-Write a punchy, high-retention voiceover script of 4 to 5 complete sentences (approximately {target_words} words) about: "{nature}" (scene hint: "{content_hint}", elements: {tag_text}).
+Write a punchy, high-retention voiceover script of 3 to 5 complete sentences (approximately {target_words} words) strictly about "{nature}" matching the scene "{content_hint}" (elements: {tag_text}).
 {fact_block}
 Strict Viral Structure:
 1. FIRST SENTENCE (0-2s HOOK): Start immediately with a shocking, counter-intuitive, or high-stakes fact or question. NEVER start with "In the heart of", "Bathed in", or generic scenery descriptions.
@@ -852,6 +851,41 @@ Return only the title. No HTML. No Markdown. No quotation marks.
     return clean_title.strip()
 
 
+_STOPWORDS = {"in", "on", "at", "of", "the", "a", "an", "with", "over", "under", "and"}
+
+
+def _video_matches_topic(query: str, metadata: dict) -> bool:
+    """
+    Strictly verifies that every required keyword in `query` (or its singular/plural form)
+    appears in the video's title, URL slug, or tags.
+    Prevents fuzzy stock search mismatches (e.g., 'platypus' returning 'duck' videos).
+    """
+    req_words = [w for w in re.findall(r"[a-z]+", (query or "").lower()) if w not in _STOPWORDS]
+    if not req_words:
+        return True
+
+    haystack_str = " ".join([
+        str(metadata.get("title") or ""),
+        " ".join(str(t) for t in (metadata.get("tags") or [])),
+        str(metadata.get("original_url") or ""),
+    ]).lower()
+    haystack_tokens = set(re.findall(r"[a-z]+", haystack_str))
+
+    for word in req_words:
+        variants = {word, f"{word}s", f"{word}es"}
+        if word.endswith("ies") and len(word) > 3:
+            variants.add(f"{word[:-3]}y")
+        if word.endswith("y") and len(word) > 2:
+            variants.add(f"{word[:-1]}ies")
+        if word.endswith("es") and len(word) > 3:
+            variants.add(word[:-2])
+        if word.endswith("s") and len(word) > 2:
+            variants.add(word[:-1])
+        if not (variants & haystack_tokens):
+            return False
+    return True
+
+
 def _score_video_candidate(width: int, height: int) -> int:
     """Scores a video file preferring 1080p vertical (portrait) HD clips."""
     resolution = (width or 0) * (height or 0)
@@ -861,13 +895,13 @@ def _score_video_candidate(width: int, height: int) -> int:
     return min(resolution, 1920 * 1080) + (10_000_000 if is_vertical else 0)
 
 
-def fetch_pexels_videos(query="wildlife", min_duration=4, max_duration=60, max_results=5):
+def fetch_pexels_videos(query="wildlife", min_duration=12, max_duration=45, max_results=5):
     if not PEXELS_API_KEY:
         print("Pexels API key not configured.")
         return []
 
     headers = {"Authorization": PEXELS_API_KEY}
-    params = {"query": query, "per_page": 30, "orientation": "portrait"}
+    params = {"query": query, "per_page": 40, "orientation": "portrait"}
     url = "https://api.pexels.com/videos/search"
     try:
         resp = requests.get(url, headers=headers, params=params, timeout=HTTP_TIMEOUT)
@@ -883,10 +917,19 @@ def fetch_pexels_videos(query="wildlife", min_duration=4, max_duration=60, max_r
         v for v in resp.json().get("videos", [])
         if min_duration <= v.get("duration", 0) <= max_duration
     ]
-    random.shuffle(videos)
 
     candidates = []
     for video in videos:
+        metadata = {
+            "title": video.get("url", "").rstrip("/").split("/")[-1].replace("-", " "),
+            "duration": video.get("duration"),
+            "tags": [tag["title"] for tag in video.get("tags", []) if isinstance(tag, dict) and "title" in tag],
+            "original_url": video.get("url"),
+            "source": "pexels",
+        }
+        if not _video_matches_topic(query, metadata):
+            continue
+
         best_vf = None
         best_score = 0
         for vf in video.get("video_files", []):
@@ -898,27 +941,22 @@ def fetch_pexels_videos(query="wildlife", min_duration=4, max_duration=60, max_r
                 best_score = score
                 best_vf = vf
         if best_vf:
-            metadata = {
-                "title": video.get("url", "").rstrip("/").split("/")[-1].replace("-", " "),
-                "duration": video.get("duration"),
-                "width": best_vf.get("width"),
-                "height": best_vf.get("height"),
-                "tags": [tag["title"] for tag in video.get("tags", []) if isinstance(tag, dict) and "title" in tag],
-                "original_url": video.get("url"),
-                "source": "pexels",
-            }
+            metadata["width"] = best_vf.get("width")
+            metadata["height"] = best_vf.get("height")
             candidates.append((best_vf["link"], metadata))
             if len(candidates) >= max_results:
                 break
     return candidates
 
 
-def fetch_pexels_video(query="nature", min_duration=15, max_duration=60):
-    results = fetch_pexels_videos(query=query, min_duration=min_duration, max_duration=max_duration, max_results=1)
-    return results[0] if results else (None, None)
+def fetch_pexels_video(query="nature", min_duration=12, max_duration=45):
+    results = fetch_pexels_videos(query=query, min_duration=min_duration, max_duration=max_duration, max_results=3)
+    if not results:
+        return None, None
+    return random.choice(results)
 
 
-def fetch_pixabay_videos(query="wildlife", min_duration=4, max_duration=60, max_results=5):
+def fetch_pixabay_videos(query="wildlife", min_duration=12, max_duration=45, max_results=5):
     if not PIXABAY_API_KEY:
         print("Pixabay API key not configured.")
         return []
@@ -927,7 +965,7 @@ def fetch_pixabay_videos(query="wildlife", min_duration=4, max_duration=60, max_
         "key": PIXABAY_API_KEY,
         "q": query,
         "video_type": "film",
-        "per_page": 30
+        "per_page": 40
     }
     url = "https://pixabay.com/api/videos/"
     try:
@@ -944,10 +982,19 @@ def fetch_pixabay_videos(query="wildlife", min_duration=4, max_duration=60, max_
         v for v in resp.json().get("hits", [])
         if min_duration <= v.get("duration", 0) <= max_duration
     ]
-    random.shuffle(hits)
 
     candidates = []
     for video in hits:
+        metadata = {
+            "title": video.get("tags", ""),
+            "duration": video.get("duration"),
+            "tags": [t.strip() for t in video.get("tags", "").split(",") if t.strip()],
+            "original_url": video.get("pageURL"),
+            "source": "pixabay",
+        }
+        if not _video_matches_topic(query, metadata):
+            continue
+
         best_vf = None
         best_score = 0
         for _, vf in video.get("videos", {}).items():
@@ -959,24 +1006,19 @@ def fetch_pixabay_videos(query="wildlife", min_duration=4, max_duration=60, max_
                 best_score = score
                 best_vf = vf
         if best_vf:
-            metadata = {
-                "title": video.get("tags", ""),
-                "duration": video.get("duration"),
-                "width": best_vf.get("width"),
-                "height": best_vf.get("height"),
-                "tags": [t.strip() for t in video.get("tags", "").split(",") if t.strip()],
-                "original_url": video.get("pageURL"),
-                "source": "pixabay",
-            }
+            metadata["width"] = best_vf.get("width")
+            metadata["height"] = best_vf.get("height")
             candidates.append((best_vf["url"], metadata))
             if len(candidates) >= max_results:
                 break
     return candidates
 
 
-def fetch_pixabay_video(query="nature", min_duration=15, max_duration=60):
-    results = fetch_pixabay_videos(query=query, min_duration=min_duration, max_duration=max_duration, max_results=1)
-    return results[0] if results else (None, None)
+def fetch_pixabay_video(query="nature", min_duration=12, max_duration=45):
+    results = fetch_pixabay_videos(query=query, min_duration=min_duration, max_duration=max_duration, max_results=3)
+    if not results:
+        return None, None
+    return random.choice(results)
 
 
 def fetch_nasa_videos(query="earth", max_results=3):
@@ -989,12 +1031,18 @@ def fetch_nasa_videos(query="earth", max_results=3):
         if resp.status_code != 200:
             return []
         items = resp.json().get("collection", {}).get("items", [])
-        random.shuffle(items)
         candidates = []
         for item in items[:10]:
             nasa_id = (item.get("data") or [{}])[0].get("nasa_id")
-            title = (item.get("data") or [{}])[0].get("title", query)
-            if not nasa_id:
+            title = (item.get("data") or [{}])[0].get("title", "")
+            meta = {
+                "title": title,
+                "duration": 20,
+                "tags": ["nasa", "earth"],
+                "original_url": f"https://images.nasa.gov/details-{nasa_id}",
+                "source": "nasa",
+            }
+            if not nasa_id or not _video_matches_topic(query, meta):
                 continue
             asset_resp = requests.get(f"https://images-api.nasa.gov/asset/{nasa_id}", timeout=15)
             if asset_resp.status_code != 200:
@@ -1004,13 +1052,7 @@ def fetch_nasa_videos(query="earth", max_results=3):
                 if (a.get("href") or "").endswith(".mp4") and not is_duplicate_video(a.get("href"))
             ]
             if mp4_links:
-                candidates.append((mp4_links[0], {
-                    "title": title,
-                    "duration": 20,
-                    "tags": [query, "nasa", "earth"],
-                    "original_url": f"https://images.nasa.gov/details-{nasa_id}",
-                    "source": "nasa",
-                }))
+                candidates.append((mp4_links[0], meta))
                 if len(candidates) >= max_results:
                     break
         return candidates
@@ -1036,11 +1078,18 @@ def fetch_internet_archive_videos(query="wildlife", max_results=3):
         if resp.status_code != 200:
             return []
         docs = resp.json().get("response", {}).get("docs", [])
-        random.shuffle(docs)
         candidates = []
         for doc in docs[:8]:
             identifier = doc.get("identifier")
-            if not identifier:
+            title = doc.get("title", "")
+            meta = {
+                "title": title,
+                "duration": 25,
+                "tags": ["wildlife", "archive"],
+                "original_url": f"https://archive.org/details/{identifier}",
+                "source": "internet_archive",
+            }
+            if not identifier or not _video_matches_topic(query, meta):
                 continue
             meta_resp = requests.get(f"https://archive.org/metadata/{identifier}", timeout=15)
             if meta_resp.status_code != 200:
@@ -1054,13 +1103,7 @@ def fetch_internet_archive_videos(query="wildlife", max_results=3):
             if mp4_files:
                 dl_url = f"https://archive.org/download/{identifier}/{mp4_files[0]['name']}"
                 if not is_duplicate_video(dl_url):
-                    candidates.append((dl_url, {
-                        "title": doc.get("title", query),
-                        "duration": 25,
-                        "tags": [query, "wildlife", "archive"],
-                        "original_url": f"https://archive.org/details/{identifier}",
-                        "source": "internet_archive",
-                    }))
+                    candidates.append((dl_url, meta))
                     if len(candidates) >= max_results:
                         break
         return candidates
@@ -1090,20 +1133,21 @@ def fetch_wikimedia_videos(query="wildlife", max_results=3):
         if resp.status_code != 200:
             return []
         pages = list((resp.json().get("query") or {}).get("pages", {}).values())
-        random.shuffle(pages)
         candidates = []
         for page in pages:
             info = (page.get("imageinfo") or [{}])[0]
             file_url = info.get("url")
             size = info.get("size") or 0
-            if file_url and size < 80_000_000 and not is_duplicate_video(file_url):
-                candidates.append((file_url, {
-                    "title": page.get("title", query).replace("File:", ""),
-                    "duration": 20,
-                    "tags": [query, "wikimedia", "wildlife"],
-                    "original_url": info.get("descriptionurl", file_url),
-                    "source": "wikimedia",
-                }))
+            title = page.get("title", "").replace("File:", "")
+            meta = {
+                "title": title,
+                "duration": 20,
+                "tags": ["wikimedia", "wildlife"],
+                "original_url": info.get("descriptionurl", file_url),
+                "source": "wikimedia",
+            }
+            if file_url and size < 80_000_000 and _video_matches_topic(query, meta) and not is_duplicate_video(file_url):
+                candidates.append((file_url, meta))
                 if len(candidates) >= max_results:
                     break
         return candidates
@@ -1114,60 +1158,23 @@ def fetch_wikimedia_videos(query="wildlife", max_results=3):
 
 def fetch_nature_video(query="nature"):
     """
-    Tries Pexels, Pixabay, Internet Archive, Wikimedia Commons, and NASA in order.
+    Fetches ONE strictly verified, cohesive HD video whose metadata explicitly matches `query`.
+    Tries Pexels, Pixabay, Wikimedia Commons, Internet Archive, and NASA in order.
     """
     for fetcher in (fetch_pexels_video, fetch_pixabay_video):
         video_url, metadata = fetcher(query)
         if video_url:
-            print(f"✅ Fetched video from {metadata.get('source', 'stock')}: {video_url}")
+            print(f"✅ Fetched verified '{query}' video from {metadata.get('source', 'stock')}: {video_url}")
             return video_url, metadata
 
     for free_fetcher in (fetch_wikimedia_videos, fetch_internet_archive_videos, fetch_nasa_videos):
         results = free_fetcher(query, max_results=1)
         if results:
             video_url, metadata = results[0]
-            print(f"✅ Fetched video from {metadata.get('source', 'free-archive')}: {video_url}")
+            print(f"✅ Fetched verified '{query}' video from {metadata.get('source', 'free-archive')}: {video_url}")
             return video_url, metadata
 
-    raise Exception("❌ Failed to fetch a nature video from all sources.")
-
-
-def fetch_unique_nature_clips(attempts=5, max_clips=7):
-    """
-    Fetches 1 to max_clips unique video clips for a wildlife topic so the final Reel
-    can use fast 2.5-3.5s visual cuts instead of a single static shot.
-    """
-    for attempt in range(attempts):
-        query = random.choice(WILDLIFE_TOPICS)
-        print(f"🔁 Attempt {attempt + 1}: Gathering clips for '{query}'")
-        clips = []
-        seen_urls = set()
-
-        for fetcher in (
-            lambda q: fetch_pexels_videos(q, min_duration=4, max_duration=60, max_results=max_clips),
-            lambda q: fetch_pixabay_videos(q, min_duration=4, max_duration=60, max_results=max_clips),
-            lambda q: fetch_wikimedia_videos(q, max_results=3),
-            lambda q: fetch_internet_archive_videos(q, max_results=3),
-            lambda q: fetch_nasa_videos(q, max_results=2),
-        ):
-            if len(clips) >= max_clips:
-                break
-            for url, meta in fetcher(query):
-                if url and url not in seen_urls and not is_duplicate_video(url):
-                    seen_urls.add(url)
-                    clips.append((url, meta))
-                    if len(clips) >= max_clips:
-                        break
-
-        if clips:
-            for url, _ in clips:
-                save_video_to_history(url)
-            print(f"✅ Found {len(clips)} unique clip(s) for '{query}'.")
-            return query, clips
-
-        print(f"⚠️ No unique clips found for '{query}', retrying...")
-
-    raise Exception("❌ Failed to find unique clips after multiple attempts.")
+    raise Exception(f"❌ No strictly matching video found for '{query}' across all sources.")
 
 
 def download_video(video_url: str, output_dir="videos", suffix: str = "") -> str:
@@ -1243,44 +1250,39 @@ def synthesize_text(
         return output_path, ""
 
 
-def fetch_unique_nature_video(attempts=5):
+def fetch_unique_nature_video(attempts=10):
     for attempt in range(attempts):
         query = random.choice(WILDLIFE_TOPICS)
-        print(f"🔁 Attempt {attempt+1}: Trying query '{query}'")
+        print(f"🔁 Attempt {attempt + 1}: Searching strictly verified clip for '{query}'")
         try:
             video_url, metadata = fetch_nature_video(query=query)
             if video_url and not is_duplicate_video(video_url):
                 save_video_to_history(video_url)
-                print("✅ Unique video found.")
+                print(f"✅ Verified unique video found for '{query}' ({metadata.get('title')}).")
                 return query, video_url, metadata
             else:
                 print("⚠️ Duplicate or invalid video, retrying...")
         except Exception as e:
-            print(f"❌ Error during fetch: {e}")
-    raise Exception("❌ Failed to find a unique video after multiple attempts.")
+            print(f"⚠️ Skipping '{query}': {e}")
+    raise Exception("❌ Failed to find a verified unique video after multiple attempts.")
 
 
 # Main execution
 if __name__ == "__main__":
     try:
-        random_query, clip_candidates = fetch_unique_nature_clips()
-        primary_url, primary_metadata = clip_candidates[0]
-        print(f"Topic: {random_query} | Clips fetched: {len(clip_candidates)}")
+        random_query, video_url, metadata = fetch_unique_nature_video()
+        print(f"Topic: {random_query} | Verified Video: {video_url}")
+        print(f"Video Metadata: {metadata}")
     except Exception as e:
         print(str(e))
         sys.exit(1)
 
-    video_paths = []
-    for idx, (clip_url, _) in enumerate(clip_candidates):
-        downloaded = download_video(clip_url, suffix=f"_{idx}")
-        if downloaded:
-            video_paths.append(downloaded)
-
-    if not video_paths:
+    video_path = download_video(video_url)
+    if not video_path:
         sys.exit(1)
 
     fact_context = fetch_wildlife_fact(random_query)
-    narration = generate_video_narration(random_query, primary_url, primary_metadata, fact_context=fact_context)
+    narration = generate_video_narration(random_query, video_url, metadata, fact_context=fact_context)
     print(f"Narration:\n{narration}")
 
     title = generate_title_from_narration(narration)
@@ -1295,9 +1297,9 @@ if __name__ == "__main__":
         hook_banner=title,
     )
 
-    # 1. Make Video (multi-clip cuts + immediate voiceover + burned-in captions)
+    # 1. Make Video (single cohesive verified video + immediate voiceover + burned-in captions)
     final_video_path = combine_video_with_music_and_voiceover(
-        video_paths, voiceover_path, subtitle_path=subtitle_path
+        video_path, voiceover_path, subtitle_path=subtitle_path
     )
 
     if not final_video_path or not os.path.exists(final_video_path):

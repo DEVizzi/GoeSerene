@@ -99,6 +99,16 @@ class TestGeoSereneUpgrades(unittest.TestCase):
         )
         self.assertLessEqual(len(tweet), 280)
 
+    def test_video_matches_topic_rejects_mismatched_animals(self):
+        duck_meta = {"title": "ducks swimming in pond", "tags": ["duck", "bird", "water"], "original_url": ""}
+        self.assertFalse(natGeo_bot._video_matches_topic("platypus", duck_meta))
+
+        brown_bear_meta = {"title": "brown bear in forest", "tags": ["bear", "wildlife"], "original_url": ""}
+        self.assertFalse(natGeo_bot._video_matches_topic("polar bear", brown_bear_meta))
+
+        polar_bear_meta = {"title": "two polar bears walking on ice", "tags": ["arctic"], "original_url": ""}
+        self.assertTrue(natGeo_bot._video_matches_topic("polar bear", polar_bear_meta))
+
 
 if __name__ == "__main__":
     unittest.main()
