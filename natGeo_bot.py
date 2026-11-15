@@ -147,10 +147,12 @@ def _format_ass_time(seconds: float) -> str:
     return f"{hours}:{minutes:02d}:{secs:05.2f}"
 
 
-def generate_ass_subtitles(word_events: list, ass_path: str, words_per_chunk: int = 3) -> str:
+def generate_ass_subtitles(word_events: list, ass_path: str, words_per_chunk: int = 2) -> str:
     """
     Generates a bold, high-contrast .ass subtitle file from edge-tts WordBoundary events.
-    Designed for 1080x1920 vertical Reels/Shorts (positioned in the lower-third safe zone).
+    - Uses WrapStyle: 0 (smart wrapping), Fontsize: 52, and 120px side margins so text
+      NEVER overflows the 1080x1920 vertical frame.
+    - Splits chunks at natural speech pauses (>0.18s gap) so sentences never bleed together.
     """
     if not word_events:
         return ""
@@ -160,31 +162,50 @@ def generate_ass_subtitles(word_events: list, ass_path: str, words_per_chunk: in
         "ScriptType: v4.00+\n"
         "PlayResX: 1080\n"
         "PlayResY: 1920\n"
-        "WrapStyle: 2\n"
+        "WrapStyle: 0\n"
         "\n"
         "[V4+ Styles]\n"
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
         "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
-        "Style: Default,Arial,74,&H00FFFFFF,&H0000FFFF,&H00000000,&H80000000,"
-        "-1,0,0,0,100,100,1,0,1,5,2,2,60,60,380,1\n"
+        "Style: Default,Arial,52,&H00FFFFFF,&H0000FFFF,&H00000000,&H80000000,"
+        "-1,0,0,0,100,100,1,0,1,4,2,2,120,120,420,1\n"
         "\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     )
 
+    # Group words into short chunks (max `words_per_chunk` words and <=18 chars per line),
+    # breaking immediately whenever there is a speech pause (>0.18s) between words.
+    chunks = []
+    current = []
+    for w in word_events:
+        if current:
+            gap = w["start"] - current[-1]["end"]
+            current_chars = sum(len(x["text"]) for x in current) + len(current) - 1
+            if gap > 0.18 or len(current) >= words_per_chunk or (current_chars + 1 + len(w["text"])) > 18:
+                chunks.append(current)
+                current = []
+        current.append(w)
+    if current:
+        chunks.append(current)
+
     lines = [header]
-    for i in range(0, len(word_events), words_per_chunk):
-        chunk = word_events[i:i + words_per_chunk]
+    for i, chunk in enumerate(chunks):
         start_s = chunk[0]["start"]
-        end_s = max(chunk[-1]["end"], start_s + 0.25)
-        text = " ".join(w["text"] for w in chunk).strip()
-        if not text:
+        end_s = max(chunk[-1]["end"] + 0.06, start_s + 0.20)
+        if i + 1 < len(chunks):
+            end_s = min(end_s, max(start_s + 0.10, chunks[i + 1][0]["start"] - 0.01))
+        words_upper = [w["text"].strip().replace("{", "(").replace("}", ")").upper() for w in chunk if w["text"].strip()]
+        if not words_upper:
             continue
-        # Escape ASS braces
-        text = text.replace("{", "(").replace("}", ")")
+        joined = " ".join(words_upper)
+        # If multiple words exceed 14 chars total, stack them on two lines via \N
+        if len(words_upper) > 1 and len(joined) > 14:
+            mid = len(words_upper) // 2
+            joined = "\\N".join([" ".join(words_upper[:mid]), " ".join(words_upper[mid:])])
         lines.append(
-            f"Dialogue: 0,{_format_ass_time(start_s)},{_format_ass_time(end_s)},Default,,0,0,0,,{text.upper()}\n"
+            f"Dialogue: 0,{_format_ass_time(start_s)},{_format_ass_time(end_s)},Default,,0,0,0,,{joined}\n"
         )
 
     with open(ass_path, "w", encoding="utf-8") as f:
@@ -657,53 +678,72 @@ def fetch_wildlife_fact(topic: str) -> dict:
     return {"title": topic, "description": "", "extract": ""}
 
 
+def _ensure_complete_sentences(text: str) -> str:
+    """
+    Removes ellipses (...) and drops any trailing incomplete sentence fragment
+    so the narration never cuts off mid-sentence.
+    """
+    cleaned = re.sub(r"\.{2,}|…", ".", text or "").strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    if not cleaned:
+        return ""
+    # If the text does not end with terminal punctuation, trim back to the last complete sentence
+    if cleaned[-1] not in ".!?":
+        last_punct = max(cleaned.rfind("."), cleaned.rfind("!"), cleaned.rfind("?"))
+        if last_punct != -1:
+            cleaned = cleaned[:last_punct + 1].strip()
+        else:
+            cleaned += "."
+    return cleaned
+
+
 # Function: Generate Viral Hook-First NatGeo Narration using Gemini
 def generate_video_narration(nature: str, video_url: str, metadata: dict, fact_context: dict = None) -> str:
     """
     Generates a high-retention, hook-first National Geographic-style narration
-    grounded in real wildlife facts and structured as Hook -> Escalation -> Loop.
+    grounded in real wildlife facts and structured with complete sentences.
     """
     original_url = (metadata.get("original_url") or "").rstrip("/")
     raw_title = original_url.split("/")[-1] if "/" in original_url else metadata.get("title", "")
     cleaned_title = re.sub(r"-\d+$", "", raw_title).replace("-", " ")
     content_hint = cleaned_title.strip().capitalize() or nature
 
-    duration = min(max(metadata.get("duration") or 25, 20), 40)
+    duration = min(max(metadata.get("duration") or 25, 20), 35)
     tags = metadata.get("tags", [])
     tag_text = ", ".join(tags[:8]) if tags else "wild habitat"
 
     fact_extract = (fact_context or {}).get("extract", "")
     fact_block = f"\nVerified biological/scientific context:\n{fact_extract}\n" if fact_extract else ""
 
-    # Target ~2.3 words/sec for punchy, engaging documentary pacing
-    target_words = int(duration * 2.2)
-    target_words = max(45, min(target_words, 85))
+    target_words = int(duration * 2.1)
+    target_words = max(45, min(target_words, 75))
 
     prompt = f"""
 You are a viral National Geographic short-form documentary writer.
 
-Write a punchy, high-retention voiceover script of approximately {target_words} words (±10%) about: "{nature}" (scene hint: "{content_hint}", elements: {tag_text}).
+Write a punchy, high-retention voiceover script of 4 to 5 complete sentences (approximately {target_words} words) about: "{nature}" (scene hint: "{content_hint}", elements: {tag_text}).
 {fact_block}
 Strict Viral Structure:
 1. FIRST SENTENCE (0-2s HOOK): Start immediately with a shocking, counter-intuitive, or high-stakes fact or question. NEVER start with "In the heart of", "Bathed in", or generic scenery descriptions.
-2. MIDDLE (ESCALATION): Deliver 2-3 vivid, mind-blowing survival/behavioral facts in short, punchy sentences.
-3. FINAL SENTENCE (SEAMLESS LOOP): End with a thought that naturally leads right back into the opening hook so viewers rewatch.
+2. MIDDLE (ESCALATION): Deliver 2-3 vivid, mind-blowing survival/behavioral facts in short, complete sentences.
+3. FINAL SENTENCE (STRONG PAYOFF): End with a complete, powerful concluding sentence that delivers a memorable takeaway.
 
 Rules:
+- EVERY sentence MUST be 100% grammatically complete and end with a period (.) or question mark (?).
+- NEVER use ellipses (...) or leave any sentence unfinished.
 - Do NOT mention video, camera, lens, or film.
 - Plain spoken text only (no stage directions, no brackets, no markdown, no emojis).
-- Keep sentences crisp and dramatic for a {duration}-second Reel/Short.
 
 Now write the voiceover script.
     """
 
     messages = [
-        SystemMessage(content="You write viral, scientifically grounded National Geographic short-form scripts."),
+        SystemMessage(content="You write viral, scientifically grounded National Geographic short-form scripts with complete sentences."),
         HumanMessage(content=prompt)
     ]
 
     response = llm.invoke(messages)
-    return response.content.strip()
+    return _ensure_complete_sentences(response.content.strip())
 
 
 def generate_caption_from_narration(narration: str, title: str) -> str:

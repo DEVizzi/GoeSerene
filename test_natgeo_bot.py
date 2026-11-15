@@ -19,18 +19,25 @@ class TestGeoSereneUpgrades(unittest.TestCase):
         events = [
             {"text": "This", "start": 0.1, "end": 0.3},
             {"text": "tiny", "start": 0.3, "end": 0.6},
-            {"text": "octopus", "start": 0.6, "end": 1.0},
-            {"text": "hunts", "start": 1.0, "end": 1.4},
+            {"text": "cold-blooded", "start": 0.65, "end": 1.1},
+            {"text": "killer", "start": 1.12, "end": 1.4},
         ]
         with tempfile.TemporaryDirectory() as tmpdir:
             ass_path = os.path.join(tmpdir, "test.ass")
-            out = natGeo_bot.generate_ass_subtitles(events, ass_path, words_per_chunk=3)
+            out = natGeo_bot.generate_ass_subtitles(events, ass_path, words_per_chunk=2)
             self.assertEqual(out, ass_path)
             with open(ass_path, "r", encoding="utf-8") as f:
                 content = f.read()
-            self.assertIn("[Events]", content)
-            self.assertIn("THIS TINY OCTOPUS", content)
-            self.assertIn("HUNTS", content)
+            self.assertIn("WrapStyle: 0", content)
+            self.assertIn("THIS TINY", content)
+            self.assertIn("COLD-BLOODED\n", content)
+            self.assertIn("KILLER\n", content)
+
+    def test_ensure_complete_sentences_strips_ellipses_and_fragments(self):
+        raw = "Why is it warm inside? Three hundred teeth wait to strike, proving that predators need..."
+        cleaned = natGeo_bot._ensure_complete_sentences(raw)
+        self.assertNotIn("...", cleaned)
+        self.assertTrue(cleaned.endswith("."))
 
     @patch("natGeo_bot.requests.get")
     def test_fetch_wildlife_fact_success(self, mock_get):
