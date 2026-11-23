@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import base64
 import json
 import math
 import os
@@ -94,9 +95,11 @@ COVERR_API_KEY = os.getenv("COVERR_API_KEY")
 
 HTTP_TIMEOUT = 60
 LONG_VIDEO_DOWNLOAD_TIMEOUT = 240
-LONG_VIDEO_MIN_SECONDS = 485          # strictly > 8 minutes (480s + 5s safety margin)
-LONG_VIDEO_MAX_SECONDS = 2700         # <= 45 minutes so CI completes cleanly
-LONG_VIDEO_MAX_BYTES = 850_000_000    # 850 MB safety cap for GitHub Actions disk/network
+LONG_VIDEO_MIN_SECONDS = 485             # strictly > 8 minutes (8m05s)
+LONG_VIDEO_MAX_UPLOAD_SECONDS = 885      # strictly < 15 minutes (14m45s) so YouTube never rejects as "Video is too long"
+LONG_VIDEO_TRIM_TARGET_SECONDS = 750     # 12m30s cohesive feature when trimming >15m public-domain documentaries
+LONG_VIDEO_MAX_SECONDS = 2400            # <= 40 minutes source discovery ceiling
+LONG_VIDEO_MAX_BYTES = 850_000_000       # 850 MB safety cap for GitHub Actions disk/network
 LONG_VIDEO_MIN_WIDTH = 1280           # at least 720p HD horizontal
 LONG_VIDEO_MIN_HEIGHT = 720
 LONG_VIDEO_MIN_ASPECT = 1.30          # strictly horizontal widescreen (not vertical / square)
@@ -512,18 +515,103 @@ def _has_audible_audio(video_path: str, probe_info: dict) -> bool:
     return True
 
 
+def verify_nature_frames_with_gemini(video_path: str, topic: str, metadata: dict, duration_s: float) -> tuple:
+    """
+    Extracts 3 horizontal JPEG frames (20%, 50%, 80%) and uses Gemini Multimodal Vision
+    to verify the video genuinely depicts outdoor nature, wildlife, marine life, landscapes,
+    or Earth-from-space (rejecting studio interviews like 'The Jaguar Poet', cars, lectures,
+    concerts, sports, cartoons, or watermarked/low-grade clips).
+
+    Returns (approved: bool, reason: str).
+    """
+    api_key = (os.getenv("GOOGLE_API_KEY") or "").strip()
+    if not api_key:
+        return True, "GOOGLE_API_KEY unset (vision gate skipped)"
+
+    safe_video = _resolve_repo_path(video_path)
+    effective_end = min(duration_s, float(LONG_VIDEO_MAX_UPLOAD_SECONDS))
+    parts = [{
+        "text": (
+            f"You are the strict visual quality & nature curator for the @GeoSerene YouTube nature channel.\n"
+            f"Candidate search topic: '{topic}'\n"
+            f"Candidate source title: '{metadata.get('title', '')}'\n"
+            f"Candidate description: '{metadata.get('description', '')}'\n\n"
+            "Inspect these 3 frames sampled across the video and return JSON ONLY: "
+            '{"approved": true_or_false, "reason": "short explanation"}\n\n'
+            "Set approved=true ONLY IF ALL of the following hold:\n"
+            "1. The footage genuinely shows real-world nature, wildlife, animals, underwater ocean life, "
+            "national parks, mountains/forests/rivers/auroras, or Earth/space observation.\n"
+            "2. It is NOT a human studio interview, poet/music performance, lecture/presentation slides, "
+            "news broadcast, car/vehicle review, sports event, video game, or cartoon.\n"
+            "3. The image quality looks sharp, scenic, and pleasing for a widescreen YouTube nature feature."
+        )
+    }]
+
+    for frac in (0.20, 0.50, 0.80):
+        ts = max(1.0, effective_end * frac)
+        res = subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error",
+                "-ss", f"{ts:.2f}", "-i", safe_video,
+                "-frames:v", "1", "-vf", "scale=640:-2",
+                "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1",
+            ],
+            capture_output=True, timeout=25, check=False,
+        )
+        jpg = res.stdout or b""
+        if len(jpg) > 1000:
+            parts.append({
+                "inlineData": {
+                    "mimeType": "image/jpeg",
+                    "data": base64.b64encode(jpg).decode("ascii"),
+                }
+            })
+
+    if len(parts) < 2:
+        return False, "could not extract JPEG frames for vision verification"
+
+    payload = {
+        "contents": [{"role": "user", "parts": parts}],
+        "generationConfig": {"temperature": 0.1},
+    }
+    for model_name in ("models/gemini-flash-lite-latest", "models/gemini-flash-latest"):
+        try:
+            resp = requests.post(
+                f"https://generativelanguage.googleapis.com/v1beta/{model_name}:generateContent",
+                headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
+                json=payload,
+                timeout=40,
+            )
+            if resp.status_code == 404:
+                continue
+            resp.raise_for_status()
+            txt = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            txt = re.sub(r"^```(?:json)?|```$", "", txt, flags=re.IGNORECASE | re.MULTILINE).strip()
+            verdict = json.loads(txt)
+            return bool(verdict.get("approved")), str(verdict.get("reason") or "")
+        except Exception as e:
+            print(f"⚠️ Gemini Vision check warning ({model_name}): {_redact_secrets(e)}")
+    return True, "vision API unavailable; passed technical quality gates"
+
+
 def prepare_long_horizontal_video(video_path: str, intro_voice_path: str = "") -> str:
     """
     Prepares a >8-minute horizontal HD video for YouTube WITHOUT cropping to vertical:
     - Keeps full horizontal 16:9 framing.
-    - If the source footage already has audible sound and H.264 video, remuxes cleanly with +faststart.
-    - If the source footage is silent (e.g., NASA Earth orbit / NOAA ROV / Wikimedia silent camera),
-      mixes looping ambient soundtrack from `music/` + optional intro voiceover while copying H.264 video
-      whenever possible for fast CI execution.
+    - Enforces `LONG_VIDEO_MIN_SECONDS` (8m05s) .. `LONG_VIDEO_MAX_UPLOAD_SECONDS` (14m45s) so
+      videos are ALWAYS > 8 minutes AND strictly under YouTube's 15:00 unverified-channel limit!
+    - Preserves audible original sound or mixes ambient soundtrack from `music/` if silent.
     """
     safe_video = _resolve_repo_path(video_path)
     info = probe_video_file(safe_video)
     output_path = re.sub(r"\.[A-Za-z0-9]+$", "", safe_video) + "_yt_long.mp4"
+
+    raw_duration = info["duration"]
+    needs_trim = raw_duration > LONG_VIDEO_MAX_UPLOAD_SECONDS
+    start_offset = 10.0 if (needs_trim and raw_duration > LONG_VIDEO_TRIM_TARGET_SECONDS + 20.0) else 0.0
+    target_duration = LONG_VIDEO_TRIM_TARGET_SECONDS if needs_trim else raw_duration
+    trim_in_args = (["-ss", f"{start_offset:.2f}"] if start_offset > 0 else [])
+
     can_copy_video = (
         info.get("video_codec") == "h264"
         and info.get("pix_fmt") in ("yuv420p", "")
@@ -531,7 +619,7 @@ def prepare_long_horizontal_video(video_path: str, intro_voice_path: str = "") -
     )
 
     if _has_audible_audio(safe_video, info):
-        if can_copy_video and info.get("audio_codec") == "aac":
+        if can_copy_video and info.get("audio_codec") == "aac" and not needs_trim:
             subprocess.run(
                 [
                     "ffmpeg", "-y", "-i", safe_video,
@@ -546,7 +634,10 @@ def prepare_long_horizontal_video(video_path: str, intro_voice_path: str = "") -
         ]
         subprocess.run(
             [
-                "ffmpeg", "-y", "-i", safe_video,
+                "ffmpeg", "-y",
+                *trim_in_args,
+                "-i", safe_video,
+                "-t", f"{target_duration:.2f}",
                 *v_args,
                 "-c:a", "aac", "-b:a", "160k", "-ac", "2", "-ar", "44100",
                 "-movflags", "+faststart", output_path,
@@ -566,7 +657,6 @@ def prepare_long_horizontal_video(video_path: str, intro_voice_path: str = "") -
         "-vf", "scale='min(1920,iw)':-2,setsar=1",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p",
     ]
-    duration = info["duration"]
 
     if intro_voice_path and os.path.exists(intro_voice_path):
         safe_voice = _resolve_repo_path(intro_voice_path)
@@ -577,10 +667,11 @@ def prepare_long_horizontal_video(video_path: str, intro_voice_path: str = "") -
         )
         cmd = [
             "ffmpeg", "-y",
+            *trim_in_args,
             "-i", safe_video,
             "-stream_loop", "-1", "-i", music_path,
             "-i", safe_voice,
-            "-t", f"{duration:.2f}",
+            "-t", f"{target_duration:.2f}",
             "-filter_complex", fc,
             "-map", "0:v:0",
             "-map", "[aout]",
@@ -592,9 +683,10 @@ def prepare_long_horizontal_video(video_path: str, intro_voice_path: str = "") -
     else:
         cmd = [
             "ffmpeg", "-y",
+            *trim_in_args,
             "-i", safe_video,
             "-stream_loop", "-1", "-i", music_path,
-            "-t", f"{duration:.2f}",
+            "-t", f"{target_duration:.2f}",
             "-map", "0:v:0",
             "-map", "1:a:0",
             *v_args,
@@ -1439,11 +1531,21 @@ Return JSON ONLY with keys "title", "overview", "intro_voiceover":
 # ============================================================================
 _STOPWORDS = {"in", "on", "at", "of", "the", "a", "an", "with", "over", "under", "and", "from"}
 
+_NON_NATURE_BLACKLIST = {
+    "poet", "poetry", "interview", "speech", "lecture", "conference", "symposium",
+    "senate", "congress", "committee", "hearing", "parliament", "politician",
+    "concert", "orchestra", "symphony", "podcast", "sermon", "church",
+    "automobile", "sedan", "coupe", "dealership", "motorsport", "supercar",
+    "football", "baseball", "basketball", "touchdown", "stadium", "nfl",
+    "nvtv", "cartoon", "anime", "gameplay", "walkthrough", "esports",
+}
+
 
 def _video_matches_topic(query: str, metadata: dict) -> bool:
     """
     Verifies that every required keyword in `query` (or its singular/plural form)
-    appears in the video's title, description, URL slug, or tags.
+    appears in the video's title, description, URL slug, or tags, and rejects
+    obvious non-nature false positives (e.g. 'The Jaguar Poet', 'Jaguar XJ sedan', interviews).
     """
     req_words = [w for w in re.findall(r"[a-z]+", (query or "").lower()) if w not in _STOPWORDS]
     if not req_words:
@@ -1456,6 +1558,9 @@ def _video_matches_topic(query: str, metadata: dict) -> bool:
         str(metadata.get("original_url") or ""),
     ]).lower()
     haystack_tokens = set(re.findall(r"[a-z]+", haystack_str))
+
+    if haystack_tokens & _NON_NATURE_BLACKLIST:
+        return False
 
     for word in req_words:
         variants = {word, f"{word}s", f"{word}es"}
@@ -1736,10 +1841,14 @@ def fetch_wikimedia_videos(
     via Wikimedia Commons API (no key required). Strictly verifies free license metadata.
     """
     url = "https://commons.wikimedia.org/w/api.php"
+    search_q = (
+        f"{query} (wildlife OR nature OR animal OR ocean OR park OR mountain) filetype:video"
+        if horizontal_only else f"{query} filetype:video"
+    )
     params = {
         "action": "query",
         "generator": "search",
-        "gsrsearch": f"{query} filetype:video",
+        "gsrsearch": search_q,
         "gsrnamespace": 6,
         "gsrlimit": 20,
         "prop": "imageinfo",
@@ -2301,7 +2410,19 @@ def discover_and_verify_long_horizontal_video(
                 ok, reason, probe_info = verify_long_horizontal_video_quality(local_path)
                 if not ok:
                     print(f"⏭️ Rejecting candidate ({reason}): {video_url}")
-                    save_video_to_history(video_url, history_file=history_file)  # avoid re-downloading rejected low-quality file
+                    save_video_to_history(video_url, history_file=history_file)
+                    try:
+                        os.remove(local_path)
+                    except OSError:
+                        pass
+                    continue
+
+                vision_ok, vision_reason = verify_nature_frames_with_gemini(
+                    local_path, topic, meta, probe_info["duration"]
+                )
+                if not vision_ok:
+                    print(f"⏭️ Gemini Vision rejected candidate ({vision_reason}): {video_url}")
+                    save_video_to_history(video_url, history_file=history_file)
                     try:
                         os.remove(local_path)
                     except OSError:
@@ -2309,8 +2430,8 @@ def discover_and_verify_long_horizontal_video(
                     continue
 
                 print(
-                    f"✅ Verified >8m horizontal HD open-source film ({probe_info['width']}x{probe_info['height']}, "
-                    f"{probe_info['duration'] / 60:.1f} min, {meta.get('license')}): {video_url}"
+                    f"✅ Verified >8m horizontal HD nature film ({probe_info['width']}x{probe_info['height']}, "
+                    f"{probe_info['duration'] / 60:.1f} min, {meta.get('license')}, vision: {vision_reason}): {video_url}"
                 )
                 return topic, video_url, meta, local_path, probe_info
 
@@ -2523,7 +2644,8 @@ def run_reel_pipeline(state: dict) -> dict:
 def run_long_youtube_pipeline(state: dict, force: bool = False) -> dict:
     """
     Discovers a free-license, horizontal (16:9), >8-minute HD video that passes
-    visual quality checks and publishes it as a Long-Form YouTube video.
+    visual & Gemini Vision quality checks, trims >15m sources to 12m30s (within YouTube's
+    15-minute unverified limit), and publishes it as a Long-Form YouTube video.
     """
     res = {"attempted": False, "uploaded": False, "url": "", "title": "", "reason": ""}
     if not force and not ENABLE_LONG_YOUTUBE:
@@ -2541,8 +2663,13 @@ def run_long_youtube_pipeline(state: dict, force: bool = False) -> dict:
         return res
 
     topic, video_url, metadata, raw_long_path, probe_info = found
+    effective_dur = (
+        float(LONG_VIDEO_TRIM_TARGET_SECONDS)
+        if probe_info["duration"] > LONG_VIDEO_MAX_UPLOAD_SECONDS
+        else probe_info["duration"]
+    )
     fact_context = fetch_wildlife_fact(topic)
-    long_meta = generate_long_video_metadata(topic, metadata, probe_info["duration"], fact_context=fact_context)
+    long_meta = generate_long_video_metadata(topic, metadata, effective_dur, fact_context=fact_context)
 
     intro_vo_path = ""
     if not _has_audible_audio(raw_long_path, probe_info) and long_meta.get("intro_voiceover"):
@@ -2553,6 +2680,7 @@ def run_long_youtube_pipeline(state: dict, force: bool = False) -> dict:
         )
 
     final_long_path = prepare_long_horizontal_video(raw_long_path, intro_voice_path=intro_vo_path)
+    final_probe = probe_video_file(final_long_path)
     yt_id = upload_video_to_youtube(
         final_long_path,
         title=long_meta["title"],
@@ -2566,14 +2694,14 @@ def run_long_youtube_pipeline(state: dict, force: bool = False) -> dict:
         "ts": datetime.now(timezone.utc).isoformat(),
         "topic": topic,
         "title": long_meta["title"],
-        "duration_min": round(probe_info["duration"] / 60.0, 1),
-        "resolution": f"{probe_info['width']}x{probe_info['height']}",
+        "duration_min": round(final_probe["duration"] / 60.0, 1),
+        "resolution": f"{final_probe['width']}x{final_probe['height']}",
         "source": metadata.get("source", ""),
         "license": metadata.get("license", ""),
         "youtube_url": yt_url,
     })
     save_publish_state(state)
-    print(f"✅ Long-Form Horizontal YouTube Video (>8 min) uploaded: {yt_url}")
+    print(f"✅ Long-Form Horizontal YouTube Video (>8 min, <15 min) uploaded: {yt_url}")
 
     # Clean up large temporary long video files promptly
     for p in (raw_long_path, final_long_path):

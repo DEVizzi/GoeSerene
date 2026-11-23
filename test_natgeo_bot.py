@@ -123,6 +123,12 @@ class TestGeoSereneUpgrades(unittest.TestCase):
         polar_bear_meta = {"title": "two polar bears walking on ice", "tags": ["arctic"], "original_url": ""}
         self.assertTrue(natGeo_bot._video_matches_topic("polar bear", polar_bear_meta))
 
+        poet_meta = {"title": "NVTV - Roberto Tinoco Duran -The Jaguar Poet-", "tags": ["wikimedia"], "original_url": ""}
+        self.assertFalse(natGeo_bot._video_matches_topic("jaguar", poet_meta))
+
+        car_meta = {"title": "Jaguar XJ luxury sedan highway drive", "tags": ["car"], "original_url": ""}
+        self.assertFalse(natGeo_bot._video_matches_topic("jaguar", car_meta))
+
     def test_free_commercial_license_allow_and_deny_rules(self):
         # Allowed commercial-safe free licenses
         self.assertTrue(natGeo_bot.is_free_commercial_license("Public Domain"))
