@@ -1,9 +1,13 @@
 .env
 .venv/
 myvoiceoverbot-*.json
+client_secret*.json
 videos/
+logs/
 voiceover.mp3
 output.mp3
+captions.ass
+*.tmp
 __pycache__/
 *.pyc
 .DS_Store

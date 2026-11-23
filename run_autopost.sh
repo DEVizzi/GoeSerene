@@ -16,7 +16,7 @@ echo "[$(date '+%Y-%m-%d %H:%M:%S %Z')] Starting GoeSerene Auto-Post..." >> "$RE
 find "$REPO_DIR/videos" -name "*.mp4" -mtime +2 -delete 2>/dev/null || true
 
 # Commit updated history.txt locally (and push if non-interactive credentials exist)
-git add history.txt 2>/dev/null || true
+git add history.txt long_video_history.txt publish_state.json 2>/dev/null || true
 git diff --cached --quiet || git commit -m "🤖 Update history after auto-post" >> "$REPO_DIR/logs/autopost.log" 2>&1 || true
 GIT_TERMINAL_PROMPT=0 git push origin main >> "$REPO_DIR/logs/autopost.log" 2>&1 || true
 
