@@ -176,6 +176,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Refresh GeoSerene YouTube OAuth secrets in GitHub.")
     parser.add_argument("--client-secrets", type=Path, required=True, help="Path to Google OAuth client_secret.json")
     parser.add_argument("--repo", default=DEFAULT_REPO, help=f"GitHub owner/repo (default: {DEFAULT_REPO})")
+    parser.add_argument("--no-browser", action="store_true", help="Print OAuth consent URL instead of calling webbrowser.open")
     args = parser.parse_args(argv)
 
     if not _SAFE_REPO.match(args.repo):
@@ -196,9 +197,12 @@ def main(argv: list[str] | None = None) -> int:
         verifier, challenge = pkce_pair()
         auth_url = build_auth_url(client_id, redirect_uri, state, challenge)
 
-        print("1. Make sure Google Cloud OAuth Consent Screen is set to 'In production' (not 'Testing').")
-        print("2. Opening Google consent screen in your browser — select the GeoSerene YouTube channel...")
-        webbrowser.open(auth_url)
+        print("1. Make sure Google Cloud OAuth Consent Screen is set to 'In production' (not 'Testing').", flush=True)
+        if args.no_browser:
+            print(f"AUTH_URL: {auth_url}", flush=True)
+        else:
+            print("2. Opening Google consent screen in your browser — select the GeoSerene YouTube channel...", flush=True)
+            webbrowser.open(auth_url)
         cb_path = wait_for_callback(server)
     finally:
         server.server_close()
