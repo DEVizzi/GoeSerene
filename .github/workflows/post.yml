@@ -2,16 +2,15 @@ name: Auto NatGeo Reel & YouTube Documentary Bot
 
 on:
   schedule:
-    # Twice daily at global peak engagement windows (IST + US/EU overlap):
-    # - Every run uploads a 9:16 vertical Reel/Short to BOTH Instagram Reels and YouTube Shorts
-    # - Up to MAX_LONG_VIDEOS_PER_DAY (default 1/day) also publishes a >8-min horizontal HD YouTube Documentary
-    - cron: "30 13 * * *" # 1:30 PM UTC = 7:00 PM IST / 8:30 AM EST
-    - cron: "0 0 * * *"   # 00:00 UTC = 5:30 AM IST / 7:00 PM EST
+    # Strictly ONCE per day at peak global engagement overlap (avoids :00/:30 GitHub cron queue delays):
+    # 13:17 UTC -> publishes ~13:22-13:30 UTC = 7:00 PM IST (India evening peak) / 9:30 AM EDT / 2:30 PM BST
+    # Enforces strictly 1 video/day on Instagram (@geoserene) and 1 video/day on YouTube (@GeoSerene).
+    - cron: "17 13 * * *"
 
   workflow_dispatch:
     inputs:
       mode:
-        description: "Publish mode (auto = Reel on IG+YT + >8m YT horizontal; reel = IG+YT Reel only; long = >8m YT horizontal only)"
+        description: "Publish mode (auto = 1 daily video on IG + 1 on YT; reel = IG+YT Reel; long = >8m YT horizontal)"
         required: false
         default: "auto"
         type: choice
@@ -19,8 +18,14 @@ on:
           - auto
           - reel
           - long
+          - dry-run
+      force:
+        description: "Bypass the 1-video-per-day channel guard (use only for explicit manual tests)"
+        required: false
+        default: false
+        type: boolean
       force_long:
-        description: "Force a >8-minute horizontal YouTube upload even if today's cap was already met"
+        description: "Force a >8-minute horizontal YouTube documentary upload on this run"
         required: false
         default: false
         type: boolean
@@ -83,9 +88,13 @@ jobs:
         id: run_bot
         env:
           INPUT_MODE: ${{ github.event.inputs.mode || 'auto' }}
+          INPUT_FORCE: ${{ github.event.inputs.force || 'false' }}
           INPUT_FORCE_LONG: ${{ github.event.inputs.force_long || 'false' }}
         run: |
           EXTRA_ARGS=()
+          if [ "$INPUT_FORCE" = "true" ]; then
+            EXTRA_ARGS+=(--force)
+          fi
           if [ "$INPUT_FORCE_LONG" = "true" ]; then
             EXTRA_ARGS+=(--force-long)
           fi

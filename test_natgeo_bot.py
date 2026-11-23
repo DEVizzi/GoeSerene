@@ -289,6 +289,153 @@ class TestGeoSereneUpgrades(unittest.TestCase):
         with self.assertRaises(ValueError):
             reauth.parse_callback("/?code=authcode123&state=wrong_state", "st_ok")
 
+    def test_clean_text_for_tts_expands_percent_units_and_prevents_word_fusion(self):
+        raw = "Narrator: A jellyfish’s body is 95% water—gliding at 12 km/h & thriving at 4°C!"
+        cleaned = natGeo_bot.clean_text_for_tts(raw)
+        self.assertNotIn("Narrator", cleaned)
+        self.assertIn("jellyfish's", cleaned)
+        self.assertIn("95 percent", cleaned)
+        self.assertIn("water, gliding", cleaned)
+        self.assertIn("kilometers per hour", cleaned)
+        self.assertIn("degrees Celsius", cleaned)
+
+    def test_ensure_complete_sentences_preserves_full_script_without_final_period(self):
+        raw = (
+            "Did you know the giant manta ray has the largest brain of any fish in the sea? "
+            "Its twenty-foot wingspan lets this gentle filter feeder glide effortlessly across open oceans without a single biting tooth"
+        )
+        cleaned = natGeo_bot._ensure_complete_sentences(raw)
+        self.assertIn("twenty-foot wingspan", cleaned)
+        self.assertIn("filter feeder", cleaned)
+        self.assertTrue(cleaned.endswith("."))
+
+    def test_gemini_invoke_concatenates_multipart_and_skips_thought_parts(self):
+        mock_resp = MagicMock(status_code=200)
+        mock_resp.json.return_value = {
+            "candidates": [{
+                "finishReason": "STOP",
+                "content": {
+                    "parts": [
+                        {"thought": True, "text": "Internal reasoning draft..."},
+                        {"text": "First half of script. "},
+                        {"text": "Second half of script."},
+                    ]
+                },
+            }]
+        }
+        with patch.dict(os.environ, {"GOOGLE_API_KEY": "test_key_123456"}), \
+             patch("natGeo_bot.requests.post", return_value=mock_resp):
+            client = natGeo_bot.ChatGoogleGenerativeAI()
+            out = client.invoke([natGeo_bot.HumanMessage("hello")])
+        self.assertEqual(out.content, "First half of script. Second half of script.")
+
+    def test_narration_validation_rejects_short_fragment_and_retries_or_falls_back(self):
+        short_bad = natGeo_bot._GeminiResponse("Think you know this animal?")
+        good_script = natGeo_bot._GeminiResponse(
+            "Giant manta rays possess the largest brain-to-body ratio of any cold-blooded fish in the ocean. "
+            "Stretching over twenty feet from wingtip to wingtip, these peaceful filter feeders never bite prey at all. "
+            "Instead, specialized gill plates strain millions of microscopic plankton from tropical currents every single hour. "
+            "Even more remarkably, manta rays recognize their own reflections in underwater mirrors. "
+            "Every ocean crossing proves true intelligence thrives beneath the waves."
+        )
+        with patch.object(natGeo_bot.llm, "invoke", side_effect=[short_bad, good_script]):
+            narration = natGeo_bot.generate_video_narration(
+                "manta ray",
+                "https://example.com/manta.mp4",
+                {"title": "majestic manta ray gliding", "tags": ["ocean", "manta"]},
+                fact_context={"extract": "Manta rays are large eagle rays that filter feed on plankton."},
+            )
+        words = natGeo_bot.re.findall(r"[A-Za-z0-9']+", narration)
+        self.assertGreaterEqual(len(words), 45)
+        self.assertIn("manta", narration.lower())
+
+        # Also verify deterministic Wikipedia science fallback if LLM fails all 3 attempts
+        with patch.object(natGeo_bot.llm, "invoke", side_effect=RuntimeError("API down")):
+            fb = natGeo_bot.generate_video_narration(
+                "manta ray",
+                "https://example.com/manta.mp4",
+                {"title": "manta ray"},
+                fact_context={
+                    "extract": (
+                        "Manta rays are large rays belonging to the genus Mobula. "
+                        "They are filter feeders and eat large quantities of zooplankton in the open ocean."
+                    )
+                },
+            )
+        fb_words = natGeo_bot.re.findall(r"[A-Za-z0-9']+", fb)
+        self.assertGreaterEqual(len(fb_words), 42)
+        self.assertIn("manta ray", fb.lower())
+
+    def test_get_audio_duration_reads_exact_wav_pcm_frames(self):
+        import wave as _wave
+        with tempfile.TemporaryDirectory() as tmpdir:
+            wav_path = os.path.join(tmpdir, "exact_test.wav")
+            sample_rate = 44100
+            target_seconds = 18.5
+            num_frames = int(sample_rate * target_seconds)
+            with _wave.open(wav_path, "wb") as wf:
+                wf.setnchannels(2)
+                wf.setsampwidth(2)
+                wf.setframerate(sample_rate)
+                wf.writeframes(b"\x00\x00\x00\x00" * num_frames)
+            measured = natGeo_bot.get_audio_duration(wav_path)
+            self.assertAlmostEqual(measured, target_seconds, places=3)
+
+    def test_synthesize_text_retries_when_edge_tts_truncates_stream_early(self):
+        script = (
+            "Snow leopards rule the frozen Himalayan cliffs with unmatched stealth and balance. "
+            "Their thick furred tails measure nearly a meter long, acting as both a rudder mid-leap and a warm blanket in blizzards. "
+            "Wide nasal cavities warm freezing mountain air before it ever reaches their lungs."
+        )
+        words_list = natGeo_bot.re.findall(r"[A-Za-z0-9']+", script)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_mp3 = os.path.join(tmpdir, "vo.mp3")
+            out_ass = os.path.join(tmpdir, "sub.ass")
+
+            call_count = {"n": 0}
+
+            async def fake_edge(clean_txt, voice, path):
+                call_count["n"] += 1
+                with open(path, "wb") as f:
+                    f.write(b"X" * (1000 if call_count["n"] == 1 else 48_000))
+                if call_count["n"] == 1:
+                    # Simulate truncated 2-word WebSocket drop
+                    return [{"text": "Snow", "start": 0.2, "end": 0.5}, {"text": "leopards", "start": 0.5, "end": 0.9}]
+                return [
+                    {"text": w, "start": 0.2 + idx * 0.35, "end": 0.5 + idx * 0.35}
+                    for idx, w in enumerate(words_list)
+                ]
+
+            with patch.object(natGeo_bot, "edge_tts", MagicMock()), \
+                 patch("natGeo_bot._synthesize_edge_with_subtitles", side_effect=fake_edge), \
+                 patch("natGeo_bot.get_audio_duration", return_value=19.5), \
+                 patch("natGeo_bot.time.sleep"):
+                vo_res, sub_res = natGeo_bot.synthesize_text(script, output_path=out_mp3, subtitle_path=out_ass)
+
+            self.assertEqual(call_count["n"], 2)
+            self.assertEqual(vo_res, os.path.realpath(out_mp3))
+            self.assertTrue(os.path.exists(sub_res))
+
+    def test_daily_one_video_per_channel_guard_blocks_same_day_duplicates(self):
+        today = natGeo_bot._today_utc()
+        already_posted_state = {
+            "pending_youtube_reels": [],
+            "recent_reels": [{
+                "date": today,
+                "ts": f"{today}T13:20:00+00:00",
+                "topic": "orca",
+                "instagram_url": "https://www.instagram.com/reel/today1/",
+                "youtube_short_url": "https://youtu.be/today1",
+            }],
+            "long_videos": [],
+        }
+        with patch("natGeo_bot.load_publish_state", return_value=already_posted_state), \
+             patch("natGeo_bot.run_reel_pipeline") as mock_reel:
+            rc = natGeo_bot.main(["--mode", "auto"])
+            self.assertEqual(rc, 0)
+            mock_reel.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import wave
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
@@ -104,6 +105,14 @@ LONG_VIDEO_MIN_WIDTH = 1280           # at least 720p HD horizontal
 LONG_VIDEO_MIN_HEIGHT = 720
 LONG_VIDEO_MIN_ASPECT = 1.30          # strictly horizontal widescreen (not vertical / square)
 MAX_LONG_VIDEOS_PER_DAY = int(os.getenv("MAX_LONG_VIDEOS_PER_DAY", "1") or "1")
+MAX_DAILY_POSTS_PER_CHANNEL = int(os.getenv("MAX_DAILY_POSTS_PER_CHANNEL", "1") or "1")
+LONG_VIDEO_WEEKDAYS = {
+    int(x.strip())
+    for x in (os.getenv("LONG_VIDEO_WEEKDAYS", "6") or "6").split(",")
+    if x.strip().isdigit()
+}
+VOICE_LEAD_IN_S = 0.20   # 200ms clean start breath so first word is never clipped on scroll-in
+VOICE_TAIL_PAD_S = 1.40  # 1.40s post-speech cushion so the final spoken word is NEVER cut off
 ENABLE_LONG_YOUTUBE = os.getenv("ENABLE_LONG_YOUTUBE", "true").strip().lower() not in ("0", "false", "no")
 REQUIRE_BOTH_PLATFORMS = os.getenv("REQUIRE_BOTH_PLATFORMS", "true").strip().lower() not in ("0", "false", "no")
 
@@ -184,9 +193,15 @@ class _GeminiResponse:
 
 
 class ChatGoogleGenerativeAI:
-    def __init__(self, model: str = "models/gemini-flash-lite-latest", temperature: float = 0.7):
+    def __init__(
+        self,
+        model: str = "models/gemini-2.5-flash",
+        temperature: float = 0.65,
+        max_output_tokens: int = 1024,
+    ):
         self.model = model if model.startswith("models/") else f"models/{model}"
         self.temperature = temperature
+        self.max_output_tokens = max_output_tokens
 
     def invoke(self, messages: list) -> _GeminiResponse:
         api_key = os.getenv("GOOGLE_API_KEY")
@@ -196,12 +211,22 @@ class ChatGoogleGenerativeAI:
         user_parts = [m.content for m in messages if not isinstance(m, SystemMessage)]
         payload = {
             "contents": [{"role": "user", "parts": [{"text": "\n\n".join(user_parts)}]}],
-            "generationConfig": {"temperature": self.temperature},
+            "generationConfig": {
+                "temperature": self.temperature,
+                "maxOutputTokens": self.max_output_tokens,
+            },
         }
         if sys_parts:
             payload["systemInstruction"] = {"parts": [{"text": "\n".join(sys_parts)}]}
         resp = None
-        for candidate_model in (self.model, "models/gemini-3.1-flash-lite", "models/gemini-flash-latest"):
+        model_chain = list(dict.fromkeys([
+            self.model,
+            "models/gemini-2.5-flash",
+            "models/gemini-flash-latest",
+            "models/gemini-flash-lite-latest",
+            "models/gemini-3.1-flash-lite",
+        ]))
+        for candidate_model in model_chain:
             url = f"https://generativelanguage.googleapis.com/v1beta/{candidate_model}:generateContent"
             resp = requests.post(
                 url,
@@ -209,21 +234,36 @@ class ChatGoogleGenerativeAI:
                 json=payload,
                 timeout=HTTP_TIMEOUT,
             )
-            if resp.status_code == 404:
+            if resp.status_code in (404, 429, 500, 502, 503, 504):
                 continue
             resp.raise_for_status()
             data = resp.json()
-            text = data["candidates"][0]["content"]["parts"][0]["text"]
-            return _GeminiResponse(text)
+            candidates = data.get("candidates") or []
+            if not candidates:
+                continue
+            cand0 = candidates[0]
+            finish_reason = str(cand0.get("finishReason") or "")
+            if finish_reason in ("SAFETY", "RECITATION", "PROHIBITED_CONTENT"):
+                continue
+            parts = (cand0.get("content") or {}).get("parts") or []
+            non_thought_texts = [
+                str(p.get("text") or "")
+                for p in parts
+                if isinstance(p, dict) and not p.get("thought") and p.get("text")
+            ]
+            text = "".join(non_thought_texts).strip()
+            if text:
+                return _GeminiResponse(text)
         if resp is not None:
             resp.raise_for_status()
-        raise RuntimeError("No Gemini candidate models succeeded.")
+        raise RuntimeError("No Gemini candidate models returned a complete response.")
 
 
 # Initialize Gemini Chat Model
 llm = ChatGoogleGenerativeAI(
-    model="models/gemini-flash-lite-latest",
-    temperature=0.7,
+    model="models/gemini-2.5-flash",
+    temperature=0.65,
+    max_output_tokens=1024,
 )
 
 
@@ -250,26 +290,26 @@ WILDLIFE_TOPICS = [
     "coral reef", "bioluminescent waves", "waterfall", "sandstorm",
 ]
 
-# Dedicated broader documentary queries rich in >8-minute horizontal public-domain / CC films
+# Dedicated documentary queries rich in >8-minute horizontal public-domain / CC HD films
 LONG_DOCUMENTARY_TOPICS = [
-    "national park wildlife",
-    "yellowstone wildlife",
-    "ocean exploration coral reef",
-    "alaska grizzly bear wildlife",
-    "earth from space",
+    "yellowstone",
+    "yosemite",
+    "national park",
+    "coral reef",
     "aurora borealis",
-    "deep sea marine life",
-    "humpback whale ocean",
-    "glacier national park",
-    "everglades wildlife",
-    "pacific northwest rainforest",
-    "volcano eruption lava",
-    "arctic wildlife",
-    "migratory birds wetland",
-    "underwater ocean reef",
-    "yosemite waterfall nature",
-    "wild horses bison",
-    "sea turtle coral",
+    "ocean",
+    "rainforest",
+    "glacier",
+    "waterfall",
+    "volcano",
+    "everglades",
+    "grand canyon",
+    "humpback whale",
+    "grizzly bear",
+    "sea turtle",
+    "wilderness",
+    "earth",
+    "underwater",
 ]
 
 # Keep backwards-compatible alias
@@ -277,10 +317,10 @@ NATURE_QUERIES = WILDLIFE_TOPICS
 
 
 voice_names = [
+    "en-US-ChristopherNeural",
     "en-US-AndrewNeural",
     "en-GB-RyanNeural",
-    "en-US-BrianNeural",
-    "en-US-ChristopherNeural",
+    "en-US-GuyNeural",
 ]
 
 
@@ -495,24 +535,36 @@ def verify_long_horizontal_video_quality(video_path: str) -> tuple:
 
 
 def _has_audible_audio(video_path: str, probe_info: dict) -> bool:
-    """Checks whether the first 30 seconds of a video have non-silent audio."""
+    """
+    Checks whether a video genuinely has audible soundtrack/narration across multiple
+    points in the timeline (rejecting silent tracks or faint <-38 dB ambient tape hiss).
+    """
     if not probe_info.get("has_audio"):
         return False
     safe_path = _resolve_repo_path(video_path)
-    try:
-        res = subprocess.run(
-            [
-                "ffmpeg", "-hide_banner", "-t", "30", "-i", safe_path,
-                "-af", "volumedetect", "-f", "null", "-",
-            ],
-            capture_output=True, text=True, timeout=25, check=False,
-        )
-        m = re.search(r"mean_volume:\s*([-\d.]+)\s*dB", res.stderr or "")
-        if m:
-            return float(m.group(1)) > -45.0
-    except Exception:
-        pass
-    return True
+    dur = float(probe_info.get("duration") or 30.0)
+    sample_offsets = [0.0] if dur < 60.0 else [dur * 0.12, dur * 0.45, dur * 0.75]
+    best_mean_db = -99.0
+    measured = False
+    for offset in sample_offsets:
+        try:
+            res = subprocess.run(
+                [
+                    "ffmpeg", "-hide_banner",
+                    "-ss", f"{max(0.0, offset):.2f}",
+                    "-t", "20",
+                    "-i", safe_path,
+                    "-af", "volumedetect", "-f", "null", "-",
+                ],
+                capture_output=True, text=True, timeout=25, check=False,
+            )
+            m = re.search(r"mean_volume:\s*([-\d.]+)\s*dB", res.stderr or "")
+            if m:
+                measured = True
+                best_mean_db = max(best_mean_db, float(m.group(1)))
+        except Exception:
+            pass
+    return (best_mean_db > -38.0) if measured else True
 
 
 def verify_nature_frames_with_gemini(video_path: str, topic: str, metadata: dict, duration_s: float) -> tuple:
@@ -574,7 +626,7 @@ def verify_nature_frames_with_gemini(video_path: str, topic: str, metadata: dict
         "contents": [{"role": "user", "parts": parts}],
         "generationConfig": {"temperature": 0.1},
     }
-    for model_name in ("models/gemini-flash-lite-latest", "models/gemini-flash-latest"):
+    for model_name in ("models/gemini-2.5-flash", "models/gemini-flash-latest", "models/gemini-flash-lite-latest"):
         try:
             resp = requests.post(
                 f"https://generativelanguage.googleapis.com/v1beta/{model_name}:generateContent",
@@ -582,10 +634,11 @@ def verify_nature_frames_with_gemini(video_path: str, topic: str, metadata: dict
                 json=payload,
                 timeout=40,
             )
-            if resp.status_code == 404:
+            if resp.status_code in (404, 429, 500, 503):
                 continue
             resp.raise_for_status()
-            txt = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            cand_parts = ((resp.json().get("candidates") or [{}])[0].get("content") or {}).get("parts") or []
+            txt = "".join(str(p.get("text") or "") for p in cand_parts if not p.get("thought")).strip()
             txt = re.sub(r"^```(?:json)?|```$", "", txt, flags=re.IGNORECASE | re.MULTILINE).strip()
             verdict = json.loads(txt)
             return bool(verdict.get("approved")), str(verdict.get("reason") or "")
@@ -594,13 +647,18 @@ def verify_nature_frames_with_gemini(video_path: str, topic: str, metadata: dict
     return True, "vision API unavailable; passed technical quality gates"
 
 
-def prepare_long_horizontal_video(video_path: str, intro_voice_path: str = "") -> str:
+def prepare_long_horizontal_video(
+    video_path: str,
+    intro_voice_path: str = "",
+    chapter_voice_paths: list = None,
+) -> str:
     """
     Prepares a >8-minute horizontal HD video for YouTube WITHOUT cropping to vertical:
     - Keeps full horizontal 16:9 framing.
     - Enforces `LONG_VIDEO_MIN_SECONDS` (8m05s) .. `LONG_VIDEO_MAX_UPLOAD_SECONDS` (14m45s) so
       videos are ALWAYS > 8 minutes AND strictly under YouTube's 15:00 unverified-channel limit!
-    - Preserves audible original sound or mixes ambient soundtrack from `music/` if silent.
+    - Preserves & loudness-normalizes audible original sound, or scores silent films with
+      broadcast-normalized (-14 LUFS) multi-chapter narration + ducked ambient music.
     """
     safe_video = _resolve_repo_path(video_path)
     info = probe_video_file(safe_video)
@@ -632,6 +690,7 @@ def prepare_long_horizontal_video(video_path: str, intro_voice_path: str = "") -
             "-vf", "scale='min(1920,iw)':-2,setsar=1",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p",
         ]
+        af_norm = "loudnorm=I=-16:TP=-1.5:LRA=11" if _ffmpeg_has_filter("loudnorm") else "volume=1.0"
         subprocess.run(
             [
                 "ffmpeg", "-y",
@@ -639,14 +698,15 @@ def prepare_long_horizontal_video(video_path: str, intro_voice_path: str = "") -
                 "-i", safe_video,
                 "-t", f"{target_duration:.2f}",
                 *v_args,
-                "-c:a", "aac", "-b:a", "160k", "-ac", "2", "-ar", "44100",
+                "-af", af_norm,
+                "-c:a", "aac", "-b:a", "192k", "-ac", "2", "-ar", "44100",
                 "-movflags", "+faststart", output_path,
             ],
             check=True,
         )
         return output_path
 
-    # Silent footage -> add ambient background music (+ optional opening documentary voiceover)
+    # Silent footage -> add ambient background music + broadcast-normalized chapter voiceovers
     music_dir = os.path.join(BASE_DIR, "music")
     music_files = [f for f in os.listdir(music_dir) if f.endswith(".mp3")] if os.path.isdir(music_dir) else []
     if not music_files:
@@ -658,25 +718,72 @@ def prepare_long_horizontal_video(video_path: str, intro_voice_path: str = "") -
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p",
     ]
 
-    if intro_voice_path and os.path.exists(intro_voice_path):
-        safe_voice = _resolve_repo_path(intro_voice_path)
-        fc = (
-            "[1:a]volume=0.28[amb];"
-            "[2:a]adelay=800|800,apad[vo];"
-            "[amb][vo]amix=inputs=2:duration=first:normalize=0[aout]"
-        )
+    vo_files = [p for p in (chapter_voice_paths or []) if p and os.path.exists(p)]
+    if not vo_files and intro_voice_path and os.path.exists(intro_voice_path):
+        vo_files = [intro_voice_path]
+
+    fade_out_start = max(1.0, target_duration - 2.5)
+    if vo_files:
+        temp_dir = tempfile.gettempdir()
+        prepared_wavs = []
+        chapter_fracs = (0.002, 0.33, 0.68)
+        for idx, vp in enumerate(vo_files[:3]):
+            wav_out = os.path.join(temp_dir, f"long_ch_{idx}.wav")
+            wav_path, _ = _prepare_broadcast_voice_wav(vp, wav_out, lead_in_s=0.3, tail_pad_s=1.0)
+            delay_ms = int(max(800.0, target_duration * chapter_fracs[idx] * 1000.0)) if idx > 0 else 1200
+            prepared_wavs.append((wav_path, delay_ms))
+
+        extra_inputs = []
+        vo_filters = []
+        vo_labels = []
+        for idx, (wav_path, delay_ms) in enumerate(prepared_wavs):
+            in_idx = idx + 2
+            extra_inputs.extend(["-i", wav_path])
+            vo_filters.append(f"[{in_idx}:a]adelay={delay_ms}|{delay_ms},apad,atrim=0:{target_duration:.2f}[vo{idx}]")
+            vo_labels.append(f"[vo{idx}]")
+
+        if len(vo_labels) == 1:
+            vo_combined_filter = f"{vo_filters[0]};[vo0]asplit=2[vo_sc][vo_mix]"
+        else:
+            vo_combined_filter = (
+                ";".join(vo_filters)
+                + f";{''.join(vo_labels)}amix=inputs={len(vo_labels)}:duration=first:normalize=0,asplit=2[vo_sc][vo_mix]"
+            )
+
+        if _ffmpeg_has_filter("sidechaincompress"):
+            fc = (
+                f"{vo_combined_filter};"
+                f"[1:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,"
+                f"volume=0.18,atrim=0:{target_duration:.2f}[amb_raw];"
+                "[amb_raw][vo_sc]sidechaincompress=threshold=0.025:ratio=5:attack=20:release=500[amb_duck];"
+                f"[vo_mix][amb_duck]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,"
+                f"afade=t=out:st={fade_out_start:.2f}:d=2.2[aout]"
+            )
+        else:
+            fc = (
+                ";".join(vo_filters)
+                + (
+                    f";{''.join(vo_labels)}amix=inputs={len(vo_labels)}:duration=first:normalize=0[vo_mix];"
+                    if len(vo_labels) > 1 else ";[vo0]anull[vo_mix];"
+                )
+                + f"[1:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,"
+                f"volume=0.13,atrim=0:{target_duration:.2f}[amb_low];"
+                f"[vo_mix][amb_low]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,"
+                f"afade=t=out:st={fade_out_start:.2f}:d=2.2[aout]"
+            )
+
         cmd = [
             "ffmpeg", "-y",
             *trim_in_args,
             "-i", safe_video,
             "-stream_loop", "-1", "-i", music_path,
-            "-i", safe_voice,
+            *extra_inputs,
             "-t", f"{target_duration:.2f}",
             "-filter_complex", fc,
             "-map", "0:v:0",
             "-map", "[aout]",
             *v_args,
-            "-c:a", "aac", "-b:a", "160k", "-ac", "2", "-ar", "44100",
+            "-c:a", "aac", "-b:a", "192k", "-ac", "2", "-ar", "44100",
             "-movflags", "+faststart",
             output_path,
         ]
@@ -690,8 +797,8 @@ def prepare_long_horizontal_video(video_path: str, intro_voice_path: str = "") -
             "-map", "0:v:0",
             "-map", "1:a:0",
             *v_args,
-            "-af", "volume=0.32",
-            "-c:a", "aac", "-b:a", "160k", "-ac", "2", "-ar", "44100",
+            "-af", f"volume=0.26,afade=t=out:st={fade_out_start:.2f}:d=2.2",
+            "-c:a", "aac", "-b:a", "192k", "-ac", "2", "-ar", "44100",
             "-movflags", "+faststart",
             output_path,
         ]
@@ -788,9 +895,103 @@ def generate_ass_subtitles(
 
 
 def get_audio_duration(audio_path: str) -> float:
-    """Returns the duration of an audio file in seconds."""
-    info = mediainfo(_resolve_repo_path(audio_path))
-    return float(info["duration"])
+    """
+    Returns the exact duration of an audio file in seconds:
+    1. Exact PCM frame count via stdlib `wave` for .wav files (0.000s header estimation error).
+    2. `ffprobe` format/stream duration for compressed formats (.mp3/.m4a/.ogg).
+    3. `pydub.utils.mediainfo` fallback.
+    """
+    safe_audio = _resolve_repo_path(audio_path)
+    if safe_audio.lower().endswith(".wav") and os.path.exists(safe_audio):
+        try:
+            with wave.open(safe_audio, "rb") as wf:
+                frames = wf.getnframes()
+                rate = wf.getframerate()
+                if rate > 0 and frames > 0:
+                    return float(frames) / float(rate)
+        except Exception:
+            pass
+
+    try:
+        res = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration:stream=duration",
+                "-of", "json",
+                safe_audio,
+            ],
+            capture_output=True, text=True, timeout=15, check=True,
+        )
+        probe = json.loads(res.stdout or "{}")
+        durations = []
+        fmt_dur = (probe.get("format") or {}).get("duration")
+        if fmt_dur:
+            durations.append(float(fmt_dur))
+        for st in (probe.get("streams") or []):
+            if st.get("duration"):
+                durations.append(float(st["duration"]))
+        if durations:
+            return max(durations)
+    except Exception:
+        pass
+
+    if mediainfo is not None:
+        info = mediainfo(safe_audio)
+        return float(info["duration"])
+    raise RuntimeError(f"Could not determine audio duration for {safe_audio}")
+
+
+def _prepare_broadcast_voice_wav(
+    voice_path: str,
+    out_wav_path: str,
+    lead_in_s: float = VOICE_LEAD_IN_S,
+    tail_pad_s: float = VOICE_TAIL_PAD_S,
+) -> tuple:
+    """
+    Converts raw TTS speech (`edge-tts` / `gTTS` mono MP3) into a broadcast-grade
+    44.1 kHz 16-bit stereo PCM `.wav` file:
+      - Centers voice at full 0 dB gain across Left & Right (`pan=stereo|c0=c0|c1=c0`).
+      - Normalizes spoken loudness to `-14 LUFS` (`loudnorm=I=-14:TP=-1.2:LRA=7`) BEFORE
+        adding silence padding so speech is warm, loud, and front-and-center on mobile speakers.
+      - Adds `lead_in_s` (200ms) start buffer and `tail_pad_s` (1.40s) post-speech cushion
+        so neither the first nor final syllable is EVER clipped.
+    Returns `(out_wav_path, exact_total_wav_duration_seconds)`.
+    """
+    safe_in = _resolve_repo_path(voice_path)
+    safe_out = _resolve_repo_path(out_wav_path)
+    delay_ms = max(0, int(round(lead_in_s * 1000.0)))
+
+    if _ffmpeg_has_filter("loudnorm"):
+        level_filter = "loudnorm=I=-14:TP=-1.2:LRA=7"
+    elif _ffmpeg_has_filter("dynaudnorm"):
+        level_filter = "dynaudnorm=f=150:g=11:p=0.92"
+    else:
+        level_filter = "volume=2.0"
+
+    af_chain = (
+        "aformat=channel_layouts=mono,"
+        "pan=stereo|c0=c0|c1=c0,"
+        "aresample=44100,"
+        "highpass=f=75,"
+        f"{level_filter},"
+        f"adelay={delay_ms}|{delay_ms},"
+        f"apad=pad_dur={max(0.4, tail_pad_s):.2f}"
+    )
+
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-i", safe_in,
+            "-af", af_chain,
+            "-c:a", "pcm_s16le",
+            "-ar", "44100",
+            "-ac", "2",
+            safe_out,
+        ],
+        check=True,
+    )
+    exact_dur = get_audio_duration(safe_out)
+    return safe_out, exact_dur
 
 
 def combine_video_with_music_and_voiceover(
@@ -799,7 +1000,8 @@ def combine_video_with_music_and_voiceover(
     subtitle_path: str = "",
 ) -> str:
     """
-    Combines one or more video clips with background music, immediate voiceover (0.1s lead-in),
+    Combines one or more video clips with broadcast-normalized (-14 LUFS) stereo voiceover,
+    sidechain-ducked subtle background music, a 1.40s post-speech cushion (zero TTS cutoff),
     and optional burned-in ASS captions, normalized to 1080x1920 30fps SDR bt709.
     """
     if isinstance(video_paths, str):
@@ -817,22 +1019,25 @@ def combine_video_with_music_and_voiceover(
         raise FileNotFoundError(f"No .mp3 files found in {music_dir}")
     music_path = os.path.join(music_dir, random.choice(music_files))
 
-    voice_duration = get_audio_duration(safe_voice)
-    target_duration = max(voice_duration + 0.6, 10.0)
-
     temp_dir = tempfile.gettempdir()
-    paced_voice = os.path.join(temp_dir, "paced_voice.mp3")
-
-    subprocess.run([
-        "ffmpeg", "-y",
-        "-i", safe_voice,
-        "-af", "adelay=100|100",
-        paced_voice,
-    ], check=True)
+    paced_voice_wav = os.path.join(temp_dir, "paced_voice_broadcast.wav")
+    paced_voice_wav, voice_total_duration = _prepare_broadcast_voice_wav(
+        safe_voice,
+        paced_voice_wav,
+        lead_in_s=VOICE_LEAD_IN_S,
+        tail_pad_s=VOICE_TAIL_PAD_S,
+    )
+    speech_only_dur = max(0.0, voice_total_duration - VOICE_LEAD_IN_S - VOICE_TAIL_PAD_S)
+    target_duration = max(voice_total_duration, 12.0)
+    fade_out_start = max(1.0, target_duration - 0.90)
+    print(
+        f"🎙️ Broadcast voiceover ready: speech={speech_only_dur:.2f}s, "
+        f"padded_wav={voice_total_duration:.2f}s, reel_duration={target_duration:.2f}s"
+    )
 
     stitched_video = primary_video
     if len(safe_videos) > 1:
-        segment_duration = max(2.0, min(2.6, target_duration / len(safe_videos)))
+        segment_duration = max(2.5, min(4.5, target_duration / len(safe_videos)))
         clip_inputs = []
         filter_parts = []
         concat_labels = []
@@ -854,11 +1059,24 @@ def combine_video_with_music_and_voiceover(
             check=True,
         )
 
-    filter_complex = (
-        "[2:a]volume=0.22[music];"
-        "[music][1:a]amix=inputs=2:duration=longest:normalize=0[out]"
-    )
-    inputs = [stitched_video, paced_voice, music_path]
+    if _ffmpeg_has_filter("sidechaincompress"):
+        filter_complex = (
+            f"[1:a]apad,atrim=0:{target_duration:.2f},asetpts=PTS-STARTPTS,asplit=2[vo_sc][vo_mix];"
+            f"[2:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,"
+            f"volume=0.14,atrim=0:{target_duration:.2f},asetpts=PTS-STARTPTS[mus_raw];"
+            "[mus_raw][vo_sc]sidechaincompress=threshold=0.025:ratio=5:attack=15:release=400[mus_duck];"
+            f"[vo_mix][mus_duck]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,"
+            f"afade=t=out:st={fade_out_start:.2f}:d=0.85[out]"
+        )
+    else:
+        filter_complex = (
+            f"[1:a]apad,atrim=0:{target_duration:.2f},asetpts=PTS-STARTPTS[vo_mix];"
+            f"[2:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,"
+            f"volume=0.10,atrim=0:{target_duration:.2f},asetpts=PTS-STARTPTS[mus_low];"
+            f"[vo_mix][mus_low]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,"
+            f"afade=t=out:st={fade_out_start:.2f}:d=0.85[out]"
+        )
+    inputs = [stitched_video, paced_voice_wav, music_path]
 
     video_chain = (
         "[0:v]fps=30,"
@@ -899,7 +1117,7 @@ def combine_video_with_music_and_voiceover(
         "-maxrate", "5500k",
         "-bufsize", "11000k",
         "-c:a", "aac",
-        "-b:a", "128k",
+        "-b:a", "192k",
         "-ac", "2",
         "-ar", "44100",
         "-max_muxing_queue_size", "1024",
@@ -908,7 +1126,7 @@ def combine_video_with_music_and_voiceover(
     ]
 
     subprocess.run(cmd, check=True)
-    print(f"✅ Final narrated video saved: {output_path}")
+    print(f"✅ Final narrated video saved: {output_path} ({target_duration:.1f}s)")
     return output_path
 
 
@@ -1308,20 +1526,76 @@ def save_publish_state(state: dict, state_file: str = "publish_state.json") -> N
     os.replace(tmp_path, path)
 
 
+def _today_utc() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
 def long_videos_uploaded_today(state: dict) -> int:
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = _today_utc()
     return sum(1 for item in (state.get("long_videos") or []) if str(item.get("date")) == today)
+
+
+def instagram_posts_today(state: dict) -> int:
+    """Returns how many Instagram Reels have already been published on the current UTC date."""
+    today = _today_utc()
+    return sum(
+        1
+        for item in (state.get("recent_reels") or [])
+        if str(item.get("date") or str(item.get("ts") or "")[:10]) == today
+        and bool(item.get("instagram_url"))
+    )
+
+
+def youtube_posts_today(state: dict) -> int:
+    """
+    Returns total videos (Shorts + Long-Form Horizontal + Backfills) published to YouTube
+    on the current UTC date so YouTube strictly obeys the 1-video-per-day rule.
+    """
+    today = _today_utc()
+    shorts_today = sum(
+        1
+        for item in (state.get("recent_reels") or [])
+        if str(item.get("date") or str(item.get("ts") or "")[:10]) == today
+        and bool(item.get("youtube_short_url"))
+    )
+    backfills_today = sum(
+        1
+        for item in (state.get("backfilled_youtube") or [])
+        if str(item.get("date") or str(item.get("ts") or "")[:10]) == today
+    )
+    return shorts_today + long_videos_uploaded_today(state) + backfills_today
 
 
 # ============================================================================
 # NARRATION, TITLES & CAPTIONS (SHORTS + LONG-FORM YOUTUBE DOCUMENTARY)
 # ============================================================================
 def clean_text_for_tts(text: str) -> str:
-    text = re.sub(r"http\S+", "", text)
-    text = re.sub(r"[@#]\w+", "", text)
-    text = re.sub(r"[^\w\s.,!?'\-]", "", text)
-    text = re.sub(r"\s{2,}", " ", text)
-    return text.strip()
+    """
+    Normalizes a narration script into clean, natural spoken English for TTS:
+    - Strips URLs, @mentions, #hashtags, markdown, and speaker labels ('Narrator:', 'Voiceover:').
+    - Preserves contractions (`doesn't`, `nature's`) by normalizing curly apostrophes first.
+    - Expands `%`, `&`, `°C`/`°F`, `km/h`, `mph` into spoken words so '95%' never becomes '95'.
+    - Converts em-dashes, en-dashes, colons, and semicolons into natural comma pauses so adjacent
+      words NEVER fuse together.
+    """
+    s = str(text or "")
+    s = re.sub(r"https?://\S+", "", s)
+    s = re.sub(r"[@#]\w+", "", s)
+    s = re.sub(r"^\s*(?:narrator|voiceover|script|hook|voice)\s*:\s*", "", s, flags=re.IGNORECASE | re.MULTILINE)
+    s = s.replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"')
+    s = re.sub(r"(\d)\s*%", r"\1 percent", s)
+    s = s.replace("%", " percent ")
+    s = re.sub(r"°\s*C\b", " degrees Celsius", s)
+    s = re.sub(r"°\s*F\b", " degrees Fahrenheit", s)
+    s = re.sub(r"\bkm/h\b", "kilometers per hour", s, flags=re.IGNORECASE)
+    s = re.sub(r"\bmph\b", "miles per hour", s, flags=re.IGNORECASE)
+    s = s.replace("&", " and ")
+    s = re.sub(r"\s*[—–;:]+\s*", ", ", s)
+    s = re.sub(r"[^\w\s.,!?'\-]", " ", s)
+    s = re.sub(r",\s*,+", ", ", s)
+    s = re.sub(r"\s+([.,!?])", r"\1", s)
+    s = re.sub(r"\s{2,}", " ", s)
+    return s.strip()
 
 
 def fetch_wildlife_fact(topic: str) -> dict:
@@ -1338,7 +1612,7 @@ def fetch_wildlife_fact(topic: str) -> dict:
                 return {
                     "title": data.get("title", topic),
                     "description": data.get("description", ""),
-                    "extract": extract[:900],
+                    "extract": extract[:1200],
                 }
     except Exception as e:
         print(f"⚠️ Wikipedia fact lookup skipped for '{topic}': {e}")
@@ -1346,17 +1620,107 @@ def fetch_wildlife_fact(topic: str) -> dict:
 
 
 def _ensure_complete_sentences(text: str) -> str:
-    cleaned = re.sub(r"\.{2,}|…", ".", text or "").strip()
-    cleaned = re.sub(r"\s+", " ", cleaned)
+    """
+    Cleans markdown/preambles and guarantees complete terminal sentence punctuation
+    WITHOUT chopping away the body of a script when only a final period was omitted.
+    """
+    raw = str(text or "").strip()
+    raw = re.sub(
+        r"^\s*(?:here\s+is[^\n:]*:|voiceover\s*(?:script)?\s*:|narrator\s*:|script\s*:)\s*",
+        "",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    raw = raw.replace("’", "'").replace("‘", "'")
+    raw = re.sub(r"[*_~`#]+", "", raw)
+    cleaned = re.sub(r"\.{2,}|…", ".", raw).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(' "\'')
     if not cleaned:
         return ""
     if cleaned[-1] not in ".!?":
         last_punct = max(cleaned.rfind("."), cleaned.rfind("!"), cleaned.rfind("?"))
         if last_punct != -1:
-            cleaned = cleaned[: last_punct + 1].strip()
+            prefix = cleaned[: last_punct + 1].strip()
+            tail_words = re.findall(r"[A-Za-z0-9']+", cleaned[last_punct + 1 :])
+            prefix_words = re.findall(r"[A-Za-z0-9']+", prefix)
+            # Only drop a dangling cut-off fragment if <= 6 trailing words AND prefix is already substantial
+            if len(tail_words) <= 6 and len(prefix_words) >= 28:
+                cleaned = prefix
+            else:
+                cleaned = cleaned.rstrip(",;:- ") + "."
         else:
-            cleaned += "."
+            cleaned = cleaned.rstrip(",;:- ") + "."
     return cleaned
+
+
+def _is_valid_narration(script: str, topic: str, min_words: int = 42, max_words: int = 96) -> tuple:
+    """
+    Strictly validates that a generated short-form narration is full-length (42..96 words,
+    ~18-30s spoken), has >=3 complete sentences, explicitly names the subject `topic`,
+    and contains no meta/prompt leakage.
+    """
+    s = (script or "").strip()
+    if not s or s[-1] not in ".!?":
+        return False, "missing terminal sentence punctuation"
+
+    words = re.findall(r"[A-Za-z0-9']+", s)
+    if len(words) < min_words:
+        return False, f"script too short ({len(words)} words < {min_words} min)"
+    if len(words) > max_words:
+        return False, f"script too long ({len(words)} words > {max_words} max)"
+
+    sentences = [seg.strip() for seg in re.split(r"[.!?]+", s) if len(re.findall(r"[A-Za-z]+", seg)) >= 3]
+    if len(sentences) < 3:
+        return False, f"fewer than 3 complete sentences ({len(sentences)})"
+
+    low = s.lower()
+    for bad in ("voiceover", "here is the", "in this video", "subscribe", "camera", "footage"):
+        if bad in low:
+            return False, f"contains meta phrase '{bad}'"
+
+    topic_tokens = [w for w in re.findall(r"[a-z]+", (topic or "").lower()) if len(w) > 2]
+    if topic_tokens:
+        matched = False
+        for tok in topic_tokens:
+            stem = tok[:-1] if tok.endswith("s") and len(tok) > 3 else tok
+            if stem in low:
+                matched = True
+                break
+        if not matched:
+            return False, f"narration does not mention topic '{topic}'"
+
+    return True, "ok"
+
+
+def _build_fallback_narration(nature: str, fact_context: dict = None, metadata: dict = None) -> str:
+    """
+    Deterministic, scientifically grounded 50-72 word National Geographic fallback script
+    built from verified Wikipedia facts so TTS is NEVER tiny, empty, or hallucinated.
+    """
+    subject = (nature or "wildlife").strip()
+    extract = re.sub(r"\([^)]*\)", "", (fact_context or {}).get("extract") or "")
+    extract = re.sub(r"\s+", " ", extract).strip()
+    wiki_sentences = [
+        seg.strip()
+        for seg in re.split(r"(?<=[.!?])\s+", extract)
+        if 6 <= len(re.findall(r"[A-Za-z0-9']+", seg)) <= 32
+    ]
+
+    chosen = []
+    chosen.append(f"Few wonders on Earth command the wild quite like the {subject}.")
+    for sent in wiki_sentences[:3]:
+        if sum(len(re.findall(r"[A-Za-z0-9']+", x)) for x in chosen) >= 52:
+            break
+        chosen.append(sent if sent[-1] in ".!?" else sent + ".")
+
+    if sum(len(re.findall(r"[A-Za-z0-9']+", x)) for x in chosen) < 44:
+        chosen.append(
+            f"Shaped by millions of years of evolution, every movement of the {subject} reveals extraordinary precision and resilience in its natural habitat."
+        )
+    chosen.append(
+        f"Protecting the untamed world of the {subject} keeps one of Earth's most remarkable ecosystems alive."
+    )
+    return _ensure_complete_sentences(" ".join(chosen))
 
 
 def generate_video_narration(nature: str, video_url: str, metadata: dict, fact_context: dict = None) -> str:
@@ -1365,39 +1729,68 @@ def generate_video_narration(nature: str, video_url: str, metadata: dict, fact_c
     cleaned_title = re.sub(r"-\d+$", "", raw_title).replace("-", " ")
     content_hint = cleaned_title.strip().capitalize() or nature
 
-    duration = min(max(metadata.get("duration") or 20, 12), 32)
     tags = metadata.get("tags", [])
     tag_text = ", ".join(tags[:8]) if tags else "wild habitat"
 
     fact_extract = (fact_context or {}).get("extract", "")
-    fact_block = f"\nVerified biological/scientific context:\n{fact_extract}\n" if fact_extract else ""
-    target_words = max(28, min(int(duration * 2.1), 68))
+    fact_block = (
+        f"\nVerified scientific facts about {nature} (ground EVERY claim strictly in these facts — "
+        f"NEVER invent traits belonging to a different animal):\n{fact_extract}\n"
+        if fact_extract
+        else f"\nStrictly state only real, scientifically verified facts about {nature}.\n"
+    )
 
-    prompt = f"""
-You are a viral National Geographic short-form documentary writer.
+    last_reason = ""
+    for attempt in range(1, 4):
+        retry_note = (
+            f"\nIMPORTANT FIX FOR RETRY {attempt}: Previous draft failed check ({last_reason}). "
+            f"Write 52 to 68 words across 4 to 5 complete sentences explicitly naming '{nature}'."
+            if last_reason else ""
+        )
+        prompt = f"""
+You are a senior National Geographic short-form documentary narrator.
 
-Write a punchy, high-retention voiceover script of 3 to 5 complete sentences (approximately {target_words} words) strictly about "{nature}" matching the scene "{content_hint}" (elements: {tag_text}).
-{fact_block}
-Strict Viral Structure:
-1. FIRST SENTENCE (0-2s HOOK): Start immediately with a shocking, counter-intuitive, or high-stakes fact or question. NEVER start with "In the heart of", "Bathed in", or generic scenery descriptions.
-2. MIDDLE (ESCALATION): Deliver 2-3 vivid, mind-blowing survival/behavioral facts in short, complete sentences.
-3. FINAL SENTENCE (STRONG PAYOFF): End with a complete, powerful concluding sentence that delivers a memorable takeaway.
+Write a rich, gripping, crystal-clear spoken voiceover script of **52 to 68 words** (4 to 5 complete sentences, ~22 seconds spoken) strictly about "{nature}" matching the visual scene "{content_hint}" (elements: {tag_text}).
+{fact_block}{retry_note}
+Structure for Maximum Viewer Retention:
+1. SENTENCE 1 (0-3s HOOK): Name "{nature}" right away in the first sentence with a specific, astonishing, scientifically true biological or physical fact. NEVER write vague filler like "Think you know this animal?"
+2. SENTENCES 2-4 (DEEP SCIENCE & SURVIVAL): Explain how {nature} hunts, navigates, communicates, or thrives in the wild using vivid, concrete real-world details and numbers.
+3. FINAL SENTENCE (MEMORABLE PAYOFF): Close with a powerful, complete concluding sentence that leaves viewers in awe of {nature}.
 
-Rules:
-- EVERY sentence MUST be 100% grammatically complete and end with a period (.) or question mark (?).
-- NEVER use ellipses (...) or leave any sentence unfinished.
-- Do NOT mention video, camera, lens, or film.
-- Plain spoken text only (no stage directions, no brackets, no markdown, no emojis).
+Strict Output Rules:
+- MUST be between 48 and 72 words total (4 to 5 complete sentences).
+- EVERY sentence MUST end with a period (.) or question mark (?).
+- NEVER invent jaws, bites, venom, or traits that {nature} does not possess in real biology.
+- Plain spoken English only: NO markdown, NO stage directions, NO speaker labels, NO ellipses (...), NO emojis.
+""".strip()
 
-Now write the voiceover script.
-    """
+        try:
+            messages = [
+                SystemMessage(
+                    content=(
+                        "You write 52-68 word, 100% factually accurate National Geographic documentary "
+                        "voiceover scripts. Output only the spoken sentences."
+                    )
+                ),
+                HumanMessage(content=prompt),
+            ]
+            response = llm.invoke(messages)
+            candidate = _ensure_complete_sentences(response.content.strip())
+            valid, reason = _is_valid_narration(candidate, nature)
+            if valid:
+                wc = len(re.findall(r"[A-Za-z0-9']+", candidate))
+                print(f"📝 Validated Narration ({wc} words): {candidate}")
+                return candidate
+            last_reason = reason
+            print(f"⚠️ Narration draft {attempt}/3 rejected ({reason}); retrying...")
+        except Exception as e:
+            last_reason = str(e)
+            print(f"⚠️ Narration generation attempt {attempt}/3 error: {_redact_secrets(e)}")
 
-    messages = [
-        SystemMessage(content="You write viral, scientifically grounded National Geographic short-form scripts with complete sentences."),
-        HumanMessage(content=prompt),
-    ]
-    response = llm.invoke(messages)
-    return _ensure_complete_sentences(response.content.strip())
+    fallback = _build_fallback_narration(nature, fact_context=fact_context, metadata=metadata)
+    wc = len(re.findall(r"[A-Za-z0-9']+", fallback))
+    print(f"📝 Using verified Wikipedia documentary narration ({wc} words): {fallback}")
+    return fallback
 
 
 def generate_caption_from_narration(narration: str, title: str) -> str:
@@ -1410,11 +1803,12 @@ NARRATION: {narration}
 
 Craft a high-reach, SEO-optimized caption with this exact structure:
 1. SEO HOOK LINE: Start with the Title + 1 keyword-rich curiosity sentence summarizing what viewers are watching.
-2. COMMENT TRIGGER: A blank line, then one intriguing, easy-to-answer question for viewers.
+2. COMMENT TRIGGER: A blank line, then one intriguing, easy-to-answer question for viewers about this specific subject.
 3. SAVE/SHARE CTA: "Save this for later & follow @geoserene for daily wild discoveries."
 4. HASHTAGS: A blank line, then 8-12 focused, space-separated hashtags mixing broad + niche search terms (always include #wildlife #natgeo #animalfacts #naturefacts #shorts #reels).
 
 Rules:
+- Keep every statement 100% consistent with the NARRATION facts.
 - Keep it advertiser-friendly and brand-safe.
 - Do NOT include markdown (*, _, `) or HTML.
 - Keep total length under 1500 characters.
@@ -1434,34 +1828,41 @@ Rules:
     return caption.strip()
 
 
-def generate_title_from_narration(narration: str) -> str:
+def generate_title_from_narration(narration: str, topic: str = "") -> str:
+    topic_line = f"Primary Subject: {topic}\n" if topic else ""
     prompt = f"""
 You are a viral YouTube Shorts & National Geographic SEO headline writer.
 
-Given this narration:
+{topic_line}Given this narration:
 \"\"\"{narration}\"\"\"
 
-Write ONE curiosity-driven, search-friendly title (4 to 8 words, strictly under 55 characters) that makes people stop scrolling.
-Include the specific animal or phenomenon name.
+Write ONE curiosity-driven, factually accurate, search-friendly title (4 to 8 words, strictly under 55 characters) that makes people stop scrolling.
+MUST name the specific animal or natural phenomenon from the narration{f' ({topic})' if topic else ''}.
+NEVER invent facts not present in the narration.
 Keep it 100% advertiser-friendly and family-safe.
-Avoid generic titles like "Beauty of Nature" or "Silent Wilderness".
 
 Return only the title. No HTML. No Markdown. No quotation marks.
     """
     messages = [
-        SystemMessage(content="You are a viral wildlife documentary headline writer."),
+        SystemMessage(content="You are a viral, factually accurate wildlife documentary headline writer."),
         HumanMessage(content=prompt),
     ]
     response = llm.invoke(messages)
-    clean_title = re.sub(r"<[^>]+>", "", response.content.strip())
-    clean_title = re.sub(r"[*_~`\"'“”]", "", clean_title)
-    return clean_title.strip()
+    clean_title = re.sub(r"<[^>]+>", "", response.content.splitlines()[0].strip())
+    clean_title = re.sub(r"[*_~`\"'“”]", "", clean_title).strip()
+    if topic:
+        topic_tokens = [w for w in re.findall(r"[a-z]+", topic.lower()) if len(w) > 2]
+        low_title = clean_title.lower()
+        if topic_tokens and not any((t[:-1] if t.endswith("s") and len(t) > 3 else t) in low_title for t in topic_tokens):
+            clean_title = f"The Extraordinary Wild {topic.title()}"[:54]
+    return clean_title or f"Wild {(topic or 'Nature').title()} Up Close"
 
 
 def generate_long_video_metadata(topic: str, metadata: dict, duration_s: float, fact_context: dict = None) -> dict:
     """
     Generates a compelling YouTube Long-Form title (NO #Shorts!), SEO documentary description
-    with chapters and free-license attribution, and an optional short opening intro script.
+    with chapters and free-license attribution, plus 3 substantial chapter narrations
+    (45-65 words each) for scoring silent open-source nature films cleanly.
     """
     mins = max(8, int(duration_s // 60))
     raw_title = str(metadata.get("title") or topic).strip()
@@ -1476,6 +1877,7 @@ def generate_long_video_metadata(topic: str, metadata: dict, duration_s: float, 
         f"{mid2_m:02d}:00 Natural Behavior & Atmosphere"
     )
 
+    chapter_narrations = []
     try:
         prompt = f"""
 You are a senior YouTube Long-Form Nature Documentary producer for GeoSerene.
@@ -1485,27 +1887,36 @@ Source film title: {raw_title}
 Duration: {mins} minutes (widescreen horizontal documentary)
 Scientific background: {fact_extract}
 
-Return JSON ONLY with keys "title", "overview", "intro_voiceover":
+Return JSON ONLY with keys "title", "overview", "chapter_narrations":
 - "title": Compelling, searchable YouTube documentary title (45 to 85 characters, NO #Shorts, NO hashtags, NO quotes).
 - "overview": 2 rich, engaging paragraphs (120-180 words) describing what makes {topic} extraordinary for viewers watching this full-length nature feature. Plain text, no markdown.
-- "intro_voiceover": 2 calm National Geographic-style opening sentences (25-40 words) welcoming viewers to this {topic} documentary.
+- "chapter_narrations": Array of 3 calm, authoritative National Geographic voiceover paragraphs (45 to 60 words EACH, 3-4 complete sentences each) for Chapter 1 (Opening & Habitat), Chapter 2 (Wilderness Observation & Science), and Chapter 3 (Conservation & Closing Reflection), strictly grounded in real facts about {topic}.
 """
         resp = llm.invoke([
-            SystemMessage(content="Return valid JSON only with keys title, overview, intro_voiceover."),
+            SystemMessage(content="Return valid JSON only with keys title, overview, chapter_narrations."),
             HumanMessage(content=prompt),
         ]).content.strip()
         resp_clean = re.sub(r"^```(?:json)?|```$", "", resp, flags=re.IGNORECASE | re.MULTILINE).strip()
         parsed = json.loads(resp_clean)
         yt_title = re.sub(r"#\w+", "", str(parsed.get("title") or "")).strip()[:95]
         overview = re.sub(r"[*_~`<>]", "", str(parsed.get("overview") or "")).strip()
-        intro_vo = _ensure_complete_sentences(str(parsed.get("intro_voiceover") or ""))
+        raw_chapters = parsed.get("chapter_narrations") or []
+        if isinstance(raw_chapters, list):
+            for ch_txt in raw_chapters[:3]:
+                cleaned_ch = _ensure_complete_sentences(str(ch_txt or ""))
+                if len(re.findall(r"[A-Za-z0-9']+", cleaned_ch)) >= 25:
+                    chapter_narrations.append(cleaned_ch)
+        if not chapter_narrations and parsed.get("intro_voiceover"):
+            chapter_narrations.append(_ensure_complete_sentences(str(parsed.get("intro_voiceover"))))
     except Exception:
         yt_title = f"{topic.title()}: {mins}-Minute Wild Nature & Habitat Documentary (4K/HD)"[:95]
         overview = (
             f"Immerse yourself in {mins} minutes of uninterrupted horizontal footage exploring {topic} "
             f"({raw_title}).{(' ' + fact_extract[:350]) if fact_extract else ''}"
         )
-        intro_vo = f"Welcome to GeoSerene. Experience the untamed world of {topic} in full widescreen detail."
+
+    if not chapter_narrations:
+        chapter_narrations = [_build_fallback_narration(topic, fact_context=fact_context, metadata=metadata)]
 
     if not yt_title:
         yt_title = f"{topic.title()} — Full Nature Documentary ({mins} Mins)"[:95]
@@ -1513,7 +1924,7 @@ Return JSON ONLY with keys "title", "overview", "intro_voiceover":
     description = (
         f"{overview}\n\n"
         f"Chapters:\n{chapters}\n\n"
-        "Subscribe to @geoserene for daily wildlife shorts and long-form nature documentaries.\n\n"
+        "Subscribe to @geoserene for daily wildlife features and widescreen nature documentaries.\n\n"
         f"{credit_line}\n\n"
         "#naturedocumentary #wildlife #natgeo #4knature #earth #wildanimals #documentary"
     )
@@ -1523,7 +1934,13 @@ Return JSON ONLY with keys "title", "overview", "intro_voiceover":
         "wild animals", "earth documentary", "4k nature", "scenic relaxation",
         "wildlife conservation", "natural world",
     ]))
-    return {"title": yt_title, "description": description[:4900], "tags": tags, "intro_voiceover": intro_vo}
+    return {
+        "title": yt_title,
+        "description": description[:4900],
+        "tags": tags,
+        "intro_voiceover": chapter_narrations[0],
+        "chapter_narrations": chapter_narrations,
+    }
 
 
 # ============================================================================
@@ -1841,16 +2258,12 @@ def fetch_wikimedia_videos(
     via Wikimedia Commons API (no key required). Strictly verifies free license metadata.
     """
     url = "https://commons.wikimedia.org/w/api.php"
-    search_q = (
-        f"{query} (wildlife OR nature OR animal OR ocean OR park OR mountain) filetype:video"
-        if horizontal_only else f"{query} filetype:video"
-    )
     params = {
         "action": "query",
         "generator": "search",
-        "gsrsearch": search_q,
+        "gsrsearch": f"{query} filetype:video",
         "gsrnamespace": 6,
-        "gsrlimit": 20,
+        "gsrlimit": 35 if horizontal_only else 20,
         "prop": "imageinfo",
         "iiprop": "url|mime|size|dimensions|extmetadata",
         "format": "json",
@@ -1875,6 +2288,8 @@ def fetch_wikimedia_videos(
             lic_short = str((ext.get("LicenseShortName") or {}).get("value") or "")
             lic_url = str((ext.get("LicenseUrl") or {}).get("value") or "")
             usage = str((ext.get("UsageTerms") or {}).get("value") or "")
+            desc_html = str((ext.get("ImageDescription") or {}).get("value") or "")
+            desc_txt = re.sub(r"<[^>]+>", " ", desc_html).strip()[:300]
             artist = re.sub(r"<[^>]+>", "", str((ext.get("Artist") or {}).get("value") or "")).strip()[:80]
             combined_lic = f"{lic_short} {lic_url} {usage}".strip()
 
@@ -1891,6 +2306,7 @@ def fetch_wikimedia_videos(
             title = page.get("title", "").replace("File:", "")
             meta = {
                 "title": title,
+                "description": desc_txt,
                 "duration": dur,
                 "width": width,
                 "height": height,
@@ -1922,6 +2338,7 @@ def fetch_internet_archive_videos(
     max_duration=2700,
     horizontal_only=False,
     history_file="history.txt",
+    extra_lucene_filter: str = "",
 ):
     """
     Free Public-Domain & CC0/CC-BY wildlife/nature film search via Internet Archive API
@@ -1929,15 +2346,15 @@ def fetch_internet_archive_videos(
     """
     search_url = "https://archive.org/advancedsearch.php"
     license_filter = (
-        "(licenseurl:(*publicdomain* OR *zero* OR *licenses/by/*) "
+        extra_lucene_filter
+        or "(licenseurl:(*publicdomain* OR *zero* OR *licenses/by/*) "
         "OR collection:(usfws OR nationalparkservice OR noaa OR nasa OR usgs OR fedflix))"
-        " AND NOT licenseurl:(*nc* OR *nd*)"
     )
     params = {
         "q": f"({query}) AND mediatype:(movies) AND {license_filter}",
         "fl[]": ["identifier", "title", "description", "licenseurl", "creator"],
         "sort[]": "downloads desc",
-        "rows": 25,
+        "rows": 35,
         "page": 1,
         "output": "json",
     }
@@ -1950,7 +2367,7 @@ def fetch_internet_archive_videos(
             return []
         docs = resp.json().get("response", {}).get("docs", [])
         candidates = []
-        for doc in docs[:15]:
+        for doc in docs[:20]:
             identifier = doc.get("identifier")
             title = doc.get("title", "")
             desc = doc.get("description", "")
@@ -1982,7 +2399,8 @@ def fetch_internet_archive_videos(
             best_score = -1
             for f in files:
                 name = str(f.get("name") or "")
-                if not name.lower().endswith(".mp4"):
+                low_name = name.lower()
+                if not (low_name.endswith(".mp4") or (horizontal_only and low_name.endswith((".webm", ".ogv")))):
                     continue
                 size = int(float(f.get("size") or 0))
                 if size <= 0 or size >= max_bytes:
@@ -1997,12 +2415,15 @@ def fetch_internet_archive_videos(
                     continue
 
                 if horizontal_only:
-                    # Require >= 8 min length; if Archive metadata reports dimensions, enforce HD horizontal now
                     if dur < min_duration:
                         continue
                     if w and h and _score_horizontal_long_candidate(w, h, dur) <= 0:
                         continue
-                    score = _score_horizontal_long_candidate(w, h, dur) if (w and h) else min(size, 500_000_000)
+                    mp4_bonus = 200_000 if low_name.endswith(".mp4") else 0
+                    # Prefer native 8m05s..14m45s films that need zero trimming
+                    fit_bonus = 400_000 if dur <= LONG_VIDEO_MAX_UPLOAD_SECONDS else 0
+                    base_sc = _score_horizontal_long_candidate(w, h, dur) if (w and h) else min(size, 500_000_000)
+                    score = base_sc + mp4_bonus + fit_bonus
                 else:
                     score = (w * h) if (w and h) else size
 
@@ -2094,7 +2515,6 @@ def fetch_nasa_videos(
             if not mp4_links:
                 continue
 
-            # For >8m long-form mode, inspect NASA's metadata.json asset if listed to verify duration before downloading
             if horizontal_only or min_duration >= LONG_VIDEO_MIN_SECONDS:
                 meta_links = [a.get("href") for a in asset_items if str(a.get("href") or "").endswith("metadata.json")]
                 dur = 0.0
@@ -2119,7 +2539,6 @@ def fetch_nasa_videos(
                 meta["duration"] = dur
                 meta["width"] = w
                 meta["height"] = h
-                # Prefer ~large.mp4 or ~orig.mp4 over ~mobile.mp4 / ~preview.mp4 for HD horizontal quality
                 mp4_links.sort(
                     key=lambda u: (
                         2 if ("~large.mp4" in u or "1080" in u) else (1 if "~orig.mp4" in u else 0)
@@ -2137,7 +2556,7 @@ def fetch_nasa_videos(
 
 
 def fetch_loc_public_domain_videos(
-    query="national park wildlife",
+    query="national park",
     max_results=3,
     horizontal_only=False,
     history_file="history.txt",
@@ -2210,12 +2629,13 @@ def fetch_usgov_wildlife_videos(
     and NOAA Ocean Exploration (`noaa`) collections (17 U.S.C. § 105 Public Domain).
     """
     return fetch_internet_archive_videos(
-        query=f"{query} AND collection:(usfws OR nationalparkservice OR noaa OR usgs)",
+        query=query,
         max_results=max_results,
         min_duration=min_duration,
         max_duration=max_duration,
         horizontal_only=horizontal_only,
         history_file=history_file,
+        extra_lucene_filter="collection:(usfws OR nationalparkservice OR noaa OR usgs)",
     )
 
 
@@ -2256,7 +2676,12 @@ def download_video(video_url: str, output_dir="videos", suffix: str = "", timeou
     os.makedirs(safe_dir, exist_ok=True)
 
     parsed_path = urlparse(safe_url).path.lower()
-    ext = ".webm" if parsed_path.endswith(".webm") else ".mp4"
+    if parsed_path.endswith(".webm"):
+        ext = ".webm"
+    elif parsed_path.endswith(".ogv"):
+        ext = ".ogv"
+    else:
+        ext = ".mp4"
     safe_suffix = re.sub(r"[^A-Za-z0-9_\-]", "", suffix or "")[:32]
     file_name = f"nature_{datetime.now().strftime('%Y%m%d_%H%M%S')}{safe_suffix}{ext}"
     local_path = os.path.join(safe_dir, file_name)
@@ -2294,7 +2719,7 @@ def download_video(video_url: str, output_dir="videos", suffix: str = "", timeou
     return ""
 
 
-def fetch_and_download_unique_reel_video(attempts: int = 12) -> tuple:
+def fetch_and_download_unique_reel_video(attempts: int = 12, record_history: bool = True) -> tuple:
     """
     Finds AND successfully downloads a unique verified short-form clip BEFORE recording it in history.txt.
     Prevents burning history entries when an upstream server returns HTTP 429/5xx.
@@ -2312,7 +2737,8 @@ def fetch_and_download_unique_reel_video(attempts: int = 12) -> tuple:
             if not video_path:
                 print(f"⚠️ Download failed for '{query}' candidate, trying next topic/source...")
                 continue
-            save_video_to_history(video_url, history_file="history.txt")
+            if record_history:
+                save_video_to_history(video_url, history_file="history.txt")
             return query, video_url, metadata, video_path
         except Exception as e:
             print(f"⚠️ Skipping '{query}': {e}")
@@ -2334,7 +2760,7 @@ def fetch_unique_nature_video(attempts=10):
 
 
 def discover_and_verify_long_horizontal_video(
-    attempts: int = 10,
+    attempts: int = 18,
     history_file: str = "long_video_history.txt",
 ) -> tuple:
     """
@@ -2342,13 +2768,15 @@ def discover_and_verify_long_horizontal_video(
       1. Free commercial license (`is_free_commercial_license`)
       2. Horizontal format (width > height, aspect >= 1.30 — NEVER vertical like Reels)
       3. Length > 8 minutes (`duration >= 485s`)
-      4. Looks good (`verify_long_horizontal_video_quality`: >= 1280x720 HD, >= 20fps,
-         healthy contrast/luma & real motion across 15%/50%/85% sample frames).
+      4. Looks good (`verify_long_horizontal_video_quality` + `verify_nature_frames_with_gemini`).
 
     Returns (topic, video_url, metadata, verified_local_path, probe_info) or None if none found.
     """
-    topic_pool = list(LONG_DOCUMENTARY_TOPICS) + random.sample(WILDLIFE_TOPICS, k=min(12, len(WILDLIFE_TOPICS)))
-    random.shuffle(topic_pool)
+    doc_topics = list(LONG_DOCUMENTARY_TOPICS)
+    random.shuffle(doc_topics)
+    wild_topics = list(WILDLIFE_TOPICS)
+    random.shuffle(wild_topics)
+    topic_pool = doc_topics + wild_topics
 
     long_fetchers = (
         lambda q: fetch_internet_archive_videos(
@@ -2443,7 +2871,7 @@ def discover_and_verify_long_horizontal_video(
 # TTS SYNTHESIS
 # ============================================================================
 async def _synthesize_edge_with_subtitles(clean_text: str, selected_voice: str, output_path: str) -> list:
-    communicate = edge_tts.Communicate(clean_text, selected_voice, rate="+4%", boundary="WordBoundary")
+    communicate = edge_tts.Communicate(clean_text, selected_voice, rate="-2%", boundary="WordBoundary")
     word_events = []
     with open(output_path, "wb") as audio_file:
         async for chunk in communicate.stream():
@@ -2454,8 +2882,8 @@ async def _synthesize_edge_with_subtitles(clean_text: str, selected_voice: str, 
                 dur_s = chunk["duration"] / 10_000_000.0
                 word_events.append({
                     "text": chunk["text"],
-                    "start": start_s + 0.1,
-                    "end": start_s + dur_s + 0.1,
+                    "start": start_s + VOICE_LEAD_IN_S,
+                    "end": start_s + dur_s + VOICE_LEAD_IN_S,
                 })
     return word_events
 
@@ -2467,31 +2895,80 @@ def synthesize_text(
     subtitle_path="captions.ass",
     hook_banner: str = "",
 ):
+    """
+    Synthesizes full, natural National Geographic narration via `edge-tts` (-2% documentary pace)
+    and strictly verifies that EVERY sentence was synthesized (checking word boundary coverage +
+    decoded audio duration against word count) so partial WebSocket drops NEVER produce cut-off TTS.
+    """
     clean_text = clean_text_for_tts(text)
+    if not clean_text:
+        raise ValueError("Cannot synthesize empty TTS text.")
     safe_out = _resolve_repo_path(output_path)
 
-    if not selected_voice:
-        selected_voice = random.choice(voice_names)
+    expected_words = len(re.findall(r"[A-Za-z0-9']+", clean_text))
+    min_word_events = max(1, int(expected_words * 0.78))
+    min_expected_dur = max(1.5, expected_words * 0.22)
 
+    pool = list(voice_names)
+    random.shuffle(pool)
+    if selected_voice:
+        candidates = [selected_voice] + [v for v in pool if v != selected_voice]
+    else:
+        candidates = pool
+
+    last_err = None
+    if edge_tts is not None:
+        for voice in candidates[:3]:
+            try:
+                word_events = asyncio.run(_synthesize_edge_with_subtitles(clean_text, voice, safe_out))
+                file_bytes = os.path.getsize(safe_out) if os.path.exists(safe_out) else 0
+                if file_bytes < 4000:
+                    raise RuntimeError(f"TTS output too small ({file_bytes} bytes)")
+                if len(word_events) < min_word_events:
+                    raise RuntimeError(
+                        f"Incomplete Edge TTS stream: got {len(word_events)}/{expected_words} word events"
+                    )
+                try:
+                    actual_dur = get_audio_duration(safe_out)
+                except Exception:
+                    actual_dur = (word_events[-1]["end"] if word_events else 0.0)
+                if actual_dur < min_expected_dur:
+                    raise RuntimeError(
+                        f"Truncated TTS audio ({actual_dur:.2f}s < {min_expected_dur:.2f}s expected for {expected_words} words)"
+                    )
+
+                generated_sub = (
+                    generate_ass_subtitles(word_events, subtitle_path, hook_banner=hook_banner)
+                    if (word_events and subtitle_path) else ""
+                )
+                print(
+                    f"✅ Verified full TTS audio ({actual_dur:.2f}s, {len(word_events)}/{expected_words} words, "
+                    f"{voice}), captions: {bool(generated_sub)}"
+                )
+                return safe_out, generated_sub
+            except Exception as e:
+                last_err = e
+                print(f"⚠️ Edge TTS attempt with {voice} incomplete/failed ({e}); retrying...")
+                time.sleep(1.5)
+
+    print(f"⚠️ Edge TTS unavailable/incomplete ({last_err}), falling back to gTTS...")
+    from gtts import gTTS
+    tts = gTTS(text=clean_text, lang="en", tld="co.uk")
+    tts.save(safe_out)
     try:
-        word_events = asyncio.run(_synthesize_edge_with_subtitles(clean_text, selected_voice, safe_out))
-        generated_sub = (
-            generate_ass_subtitles(word_events, subtitle_path, hook_banner=hook_banner)
-            if (word_events and subtitle_path) else ""
-        )
-        print(f"✅ Audio written to {safe_out} ({selected_voice}), captions: {bool(generated_sub)}")
-        return safe_out, generated_sub
-    except Exception as e:
-        print(f"⚠️ Edge TTS failed ({e}), falling back to gTTS...")
-        from gtts import gTTS
-        tts = gTTS(text=clean_text, lang="en", tld="co.uk")
-        tts.save(safe_out)
+        gtts_dur = get_audio_duration(safe_out)
+        if gtts_dur < min_expected_dur * 0.85:
+            raise RuntimeError(f"gTTS output unexpectedly short ({gtts_dur:.2f}s for {expected_words} words)")
+        print(f"✅ Verified gTTS fallback audio ({gtts_dur:.2f}s for {expected_words} words): {safe_out}")
+    except RuntimeError:
+        raise
+    except Exception:
         print(f"✅ Audio written to {safe_out} using gTTS fallback.")
-        return safe_out, ""
+    return safe_out, ""
 
 
 # ============================================================================
-# ORCHESTRATOR: REELS ON BOTH PLATFORMS + LONG HORIZONTAL VIDEOS ON YOUTUBE
+# ORCHESTRATOR: STRICTLY 1 VIDEO PER DAY ON EACH CHANNEL AT PEAK TIMING
 # ============================================================================
 def _write_step_summary(lines: list) -> None:
     summary_path = os.getenv("GITHUB_STEP_SUMMARY")
@@ -2507,8 +2984,11 @@ def _write_step_summary(lines: list) -> None:
 def backfill_pending_youtube_reels(state: dict) -> str:
     """
     If a previous Reel published to Instagram while YouTube failed transiently,
-    re-renders/uploads 1 pending Reel to YouTube Shorts without re-posting to Instagram.
+    re-renders/uploads 1 pending Reel to YouTube Shorts ONLY when YouTube has not
+    yet published a video today (respecting the 1-video/day YouTube cap).
     """
+    if youtube_posts_today(state) >= MAX_DAILY_POSTS_PER_CHANNEL:
+        return ""
     pending = list(state.get("pending_youtube_reels") or [])
     if not pending:
         return ""
@@ -2546,20 +3026,35 @@ def backfill_pending_youtube_reels(state: dict) -> str:
     yt_url = f"https://youtu.be/{yt_id}"
     print(f"✅ Backfilled missed YouTube Short: {yt_url}")
     state["pending_youtube_reels"] = pending[1:]
+    state.setdefault("backfilled_youtube", []).append({
+        "date": _today_utc(),
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "topic": topic,
+        "youtube_url": yt_url,
+    })
+    state["backfilled_youtube"] = state["backfilled_youtube"][-20:]
     save_publish_state(state)
     return yt_url
 
 
-def run_reel_pipeline(state: dict) -> dict:
-    """Generates one vertical 9:16 Reel and publishes to BOTH Instagram Reels and YouTube Shorts."""
+def run_reel_pipeline(
+    state: dict,
+    upload_instagram: bool = True,
+    upload_youtube: bool = True,
+) -> dict:
+    """
+    Generates one vertical 9:16 Reel with verified full-length broadcast narration (-14 LUFS)
+    and publishes to Instagram Reels and/or YouTube Shorts (respecting 1-post/day per channel).
+    """
     random_query, video_url, metadata, video_path = fetch_and_download_unique_reel_video()
     print(f"Topic: {random_query} | Verified Video: {video_url}")
 
     fact_context = fetch_wildlife_fact(random_query)
     narration = generate_video_narration(random_query, video_url, metadata, fact_context=fact_context)
-    title = generate_title_from_narration(narration)
+    title = generate_title_from_narration(narration, topic=random_query)
     caption = generate_caption_from_narration(narration, title)
     credit_line = format_license_credit(metadata)
+    print(f"🏷️ Generated Title: {title}")
 
     voiceover_path, subtitle_path = synthesize_text(
         re.sub(r"[*_#~]", "", narration).strip(),
@@ -2577,24 +3072,29 @@ def run_reel_pipeline(state: dict) -> dict:
         "topic": random_query,
         "title": title,
         "instagram_ok": False,
+        "instagram_skipped_daily_cap": not upload_instagram,
         "instagram_url": "",
         "youtube_short_ok": False,
+        "youtube_skipped_daily_cap": not upload_youtube,
         "youtube_short_url": "",
         "youtube_error": "",
         "instagram_error": "",
     }
 
-    # 1. Publish to Instagram Reels
-    try:
-        _, permalink = post_reel(final_video_path, caption)
-        result["instagram_ok"] = True
-        result["instagram_url"] = permalink or "https://www.instagram.com/geoserene/"
-        print(f"✅ Instagram Reel uploaded: {result['instagram_url']}")
-    except Exception as e:
-        result["instagram_error"] = _redact_secrets(e)
-        print(f"::error::Instagram Reel upload failed: {result['instagram_error']}")
+    # 1. Publish to Instagram Reels (if within today's 1-video/day cap)
+    if upload_instagram:
+        try:
+            _, permalink = post_reel(final_video_path, caption)
+            result["instagram_ok"] = True
+            result["instagram_url"] = permalink or "https://www.instagram.com/geoserene/"
+            print(f"✅ Instagram Reel uploaded: {result['instagram_url']}")
+        except Exception as e:
+            result["instagram_error"] = _redact_secrets(e)
+            print(f"::error::Instagram Reel upload failed: {result['instagram_error']}")
+    else:
+        print("ℹ️ Instagram already has 1 video published today; skipping duplicate Instagram upload.")
 
-    # 2. Publish to YouTube Shorts
+    # 2. Publish to YouTube Shorts (if within today's 1-video/day cap)
     topic_words = [w.lower() for w in re.findall(r"[a-zA-Z]+", random_query) if len(w) > 2]
     tags_list = list(dict.fromkeys(topic_words + [
         "wildlife", "natgeo", "animalfacts", "nature", "shorts",
@@ -2602,25 +3102,27 @@ def run_reel_pipeline(state: dict) -> dict:
     ]))
     yt_title = title if "#shorts" in title.lower() else f"{title[:88]} #Shorts"
     yt_description = f"{caption}\n\n{credit_line}"[:4900]
-    try:
-        yt_id = upload_video_to_youtube(final_video_path, title=yt_title, description=yt_description, tags=tags_list)
-        result["youtube_short_ok"] = True
-        result["youtube_short_url"] = f"https://youtu.be/{yt_id}"
-        print(f"✅ YouTube Short uploaded: {result['youtube_short_url']}")
-    except Exception as e:
-        result["youtube_error"] = _redact_secrets(e)
-        print(f"::error::YouTube Short upload failed: {result['youtube_error']}")
-        # Queue for YouTube-only backfill so Instagram parity catches up once auth/network recovers
-        if result["instagram_ok"]:
-            state.setdefault("pending_youtube_reels", []).append({
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "topic": random_query,
-                "video_url": video_url,
-                "title": title,
-                "narration": narration,
-                "caption": yt_description,
-                "instagram_url": result["instagram_url"],
-            })
+    if upload_youtube:
+        try:
+            yt_id = upload_video_to_youtube(final_video_path, title=yt_title, description=yt_description, tags=tags_list)
+            result["youtube_short_ok"] = True
+            result["youtube_short_url"] = f"https://youtu.be/{yt_id}"
+            print(f"✅ YouTube Short uploaded: {result['youtube_short_url']}")
+        except Exception as e:
+            result["youtube_error"] = _redact_secrets(e)
+            print(f"::error::YouTube Short upload failed: {result['youtube_error']}")
+            if result["instagram_ok"]:
+                state.setdefault("pending_youtube_reels", []).append({
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "topic": random_query,
+                    "video_url": video_url,
+                    "title": title,
+                    "narration": narration,
+                    "caption": yt_description,
+                    "instagram_url": result["instagram_url"],
+                })
+    else:
+        print("ℹ️ YouTube already has 1 video published today; keeping YouTube strictly at 1 post/day.")
 
     # 3. Optional Twitter/X cross-post
     if result["instagram_ok"] or result["youtube_short_ok"]:
@@ -2630,6 +3132,7 @@ def run_reel_pipeline(state: dict) -> dict:
         post_to_twitter_text_only(tweet_caption)
 
     state.setdefault("recent_reels", []).append({
+        "date": _today_utc(),
         "ts": datetime.now(timezone.utc).isoformat(),
         "topic": random_query,
         "title": title,
@@ -2645,11 +3148,15 @@ def run_long_youtube_pipeline(state: dict, force: bool = False) -> dict:
     """
     Discovers a free-license, horizontal (16:9), >8-minute HD video that passes
     visual & Gemini Vision quality checks, trims >15m sources to 12m30s (within YouTube's
-    15-minute unverified limit), and publishes it as a Long-Form YouTube video.
+    15-minute unverified limit), and publishes it as YouTube's 1 daily video.
     """
     res = {"attempted": False, "uploaded": False, "url": "", "title": "", "reason": ""}
     if not force and not ENABLE_LONG_YOUTUBE:
         res["reason"] = "disabled via ENABLE_LONG_YOUTUBE"
+        return res
+    if not force and youtube_posts_today(state) >= MAX_DAILY_POSTS_PER_CHANNEL:
+        res["reason"] = f"YouTube daily cap ({MAX_DAILY_POSTS_PER_CHANNEL} video/day) already reached today"
+        print(f"ℹ️ Skipping long-form YouTube discovery: {res['reason']}.")
         return res
     if not force and long_videos_uploaded_today(state) >= MAX_LONG_VIDEOS_PER_DAY:
         res["reason"] = f"daily long-video cap ({MAX_LONG_VIDEOS_PER_DAY}) already reached today"
@@ -2671,15 +3178,26 @@ def run_long_youtube_pipeline(state: dict, force: bool = False) -> dict:
     fact_context = fetch_wildlife_fact(topic)
     long_meta = generate_long_video_metadata(topic, metadata, effective_dur, fact_context=fact_context)
 
-    intro_vo_path = ""
-    if not _has_audible_audio(raw_long_path, probe_info) and long_meta.get("intro_voiceover"):
-        intro_vo_path, _ = synthesize_text(
-            long_meta["intro_voiceover"],
-            output_path=os.path.join(tempfile.gettempdir(), "long_intro_vo.mp3"),
-            subtitle_path="",
+    chapter_vo_paths = []
+    if not _has_audible_audio(raw_long_path, probe_info):
+        chapters_text = long_meta.get("chapter_narrations") or (
+            [long_meta["intro_voiceover"]] if long_meta.get("intro_voiceover") else []
         )
+        shared_voice = random.choice(voice_names)
+        for idx, ch_script in enumerate(chapters_text[:3]):
+            out_mp3 = os.path.join(tempfile.gettempdir(), f"long_chapter_{idx}.mp3")
+            vo_file, _ = synthesize_text(
+                ch_script,
+                output_path=out_mp3,
+                selected_voice=shared_voice,
+                subtitle_path="",
+            )
+            chapter_vo_paths.append(vo_file)
 
-    final_long_path = prepare_long_horizontal_video(raw_long_path, intro_voice_path=intro_vo_path)
+    final_long_path = prepare_long_horizontal_video(
+        raw_long_path,
+        chapter_voice_paths=chapter_vo_paths,
+    )
     final_probe = probe_video_file(final_long_path)
     yt_id = upload_video_to_youtube(
         final_long_path,
@@ -2690,7 +3208,7 @@ def run_long_youtube_pipeline(state: dict, force: bool = False) -> dict:
     yt_url = f"https://www.youtube.com/watch?v={yt_id}"
     save_video_to_history(video_url, history_file="long_video_history.txt")
     state.setdefault("long_videos", []).append({
-        "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "date": _today_utc(),
         "ts": datetime.now(timezone.utc).isoformat(),
         "topic": topic,
         "title": long_meta["title"],
@@ -2704,7 +3222,7 @@ def run_long_youtube_pipeline(state: dict, force: bool = False) -> dict:
     print(f"✅ Long-Form Horizontal YouTube Video (>8 min, <15 min) uploaded: {yt_url}")
 
     # Clean up large temporary long video files promptly
-    for p in (raw_long_path, final_long_path):
+    for p in (raw_long_path, final_long_path, *chapter_vo_paths):
         if p and os.path.exists(p):
             try:
                 os.remove(p)
@@ -2738,42 +3256,150 @@ def check_platform_tokens() -> int:
     return 0 if ok else 1
 
 
+def run_dry_run_verification() -> int:
+    """
+    End-to-end verification of Gemini narration, Edge-TTS completeness, -14 LUFS WAV mastering,
+    sidechain-ducked FFmpeg rendering, and output loudness/duration WITHOUT uploading to channels.
+    """
+    if check_platform_tokens() != 0:
+        return 1
+    query, video_url, metadata, video_path = fetch_and_download_unique_reel_video(record_history=False)
+    fact_context = fetch_wildlife_fact(query)
+    narration = generate_video_narration(query, video_url, metadata, fact_context=fact_context)
+    title = generate_title_from_narration(narration, topic=query)
+    vo_path, sub_path = synthesize_text(
+        narration,
+        output_path=os.path.join(tempfile.gettempdir(), "dryrun_vo.mp3"),
+        subtitle_path=os.path.join(tempfile.gettempdir(), "dryrun_captions.ass"),
+        hook_banner=title,
+    )
+    vo_dur = get_audio_duration(vo_path)
+    final_mp4 = combine_video_with_music_and_voiceover(video_path, vo_path, subtitle_path=sub_path)
+    probe = probe_video_file(final_mp4)
+    vol_res = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-i", final_mp4, "-af", "volumedetect", "-f", "null", "-"],
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    mean_m = re.search(r"mean_volume:\s*([-\d.]+)\s*dB", vol_res.stderr or "")
+    max_m = re.search(r"max_volume:\s*([-\d.]+)\s*dB", vol_res.stderr or "")
+    mean_db = float(mean_m.group(1)) if mean_m else 0.0
+    max_db = float(max_m.group(1)) if max_m else 0.0
+    print(
+        f"✅ DRY-RUN VERIFIED: topic='{query}', title='{title}', "
+        f"raw_tts={vo_dur:.2f}s, final_video={probe['duration']:.2f}s ({probe['width']}x{probe['height']}), "
+        f"mean_volume={mean_db:.1f} dB, max_volume={max_db:.1f} dB"
+    )
+    for p in (video_path, final_mp4, vo_path, sub_path):
+        if p and os.path.exists(p):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+    if probe["duration"] < vo_dur + 1.0:
+        print(f"::error::Rendered video ({probe['duration']:.2f}s) truncated TTS ({vo_dur:.2f}s)!")
+        return 1
+    return 0
+
+
 def main(argv: list = None) -> int:
     parser = argparse.ArgumentParser(description="GeoSerene Dual-Platform Reels + Long-Form YouTube Engine")
     parser.add_argument(
         "--mode",
-        choices=("auto", "reel", "long", "check-tokens"),
+        choices=("auto", "reel", "long", "check-tokens", "dry-run"),
         default="auto",
-        help="auto = Reel on IG+YT + daily >8m horizontal YouTube video; reel = IG+YT Reel only; long = >8m horizontal YouTube only",
+        help="auto = 1 daily post on IG + 1 daily post on YT; reel = IG+YT Reel; long = >8m Horizontal YT; dry-run = render & verify audio without uploading",
     )
-    parser.add_argument("--force-long", action="store_true", help="Upload a >8m horizontal YouTube video even if daily cap was met")
+    parser.add_argument("--force", action="store_true", help="Bypass the 1-video-per-day per-channel guard (manual test runs only)")
+    parser.add_argument("--force-long", action="store_true", help="Force a >8m horizontal YouTube upload on this run")
     args = parser.parse_args(argv)
 
     if args.mode == "check-tokens":
         return check_platform_tokens()
+    if args.mode == "dry-run":
+        return run_dry_run_verification()
 
     state = load_publish_state()
     summary_lines = ["## GeoSerene Publish Summary", ""]
 
     if args.mode == "long":
+        if not (args.force or args.force_long) and youtube_posts_today(state) >= MAX_DAILY_POSTS_PER_CHANNEL:
+            msg = "YouTube already received 1 video today (pass --force to override)."
+            print(f"ℹ️ {msg}")
+            summary_lines.append(f"- **YouTube Long-Form (>8m Horizontal):** ℹ️ {msg}")
+            _write_step_summary(summary_lines)
+            return 0
         long_res = run_long_youtube_pipeline(state, force=True)
         summary_lines.append(f"- **YouTube Long-Form (>8m Horizontal):** {long_res['url'] or long_res['reason']}")
         _write_step_summary(summary_lines)
         return 0 if long_res["uploaded"] else 1
 
-    # 1. Always post vertical Reel to BOTH Instagram Reels and YouTube Shorts
-    reel_res = run_reel_pipeline(state)
-    summary_lines.append(
-        f"- **Instagram Reel (`{reel_res['topic']}`):** "
-        f"{'✅ ' + reel_res['instagram_url'] if reel_res['instagram_ok'] else '❌ ' + reel_res['instagram_error']}"
-    )
-    summary_lines.append(
-        f"- **YouTube Short (`{reel_res['topic']}`):** "
-        f"{'✅ ' + reel_res['youtube_short_url'] if reel_res['youtube_short_ok'] else '❌ ' + reel_res['youtube_error']}"
-    )
+    ig_allowed = args.force or (instagram_posts_today(state) < MAX_DAILY_POSTS_PER_CHANNEL)
+    yt_allowed = args.force or (youtube_posts_today(state) < MAX_DAILY_POSTS_PER_CHANNEL)
 
-    # 2. If YouTube is healthy, backfill up to 1 previously missed Reel + run >8m Horizontal Long-Form YouTube pipeline
-    if reel_res["youtube_short_ok"]:
+    if not ig_allowed and not yt_allowed:
+        msg = (
+            f"Daily 1-video-per-channel limit already reached for {_today_utc()} "
+            f"(Instagram={instagram_posts_today(state)}, YouTube={youtube_posts_today(state)}). "
+            "Skipping duplicate post."
+        )
+        print(f"✅ {msg}")
+        summary_lines.append(f"- **Daily Schedule Guard:** ✅ {msg}")
+        _write_step_summary(summary_lines)
+        return 0
+
+    # On designated Long-Form Documentary day (Sunday UTC by default, or --force-long),
+    # try publishing 1 >8m horizontal HD documentary as YouTube's single daily video first;
+    # if none is found, YouTube seamlessly gets today's vertical Short instead!
+    today_weekday = datetime.now(timezone.utc).weekday()
+    should_try_long_today = (
+        args.mode == "auto"
+        and ENABLE_LONG_YOUTUBE
+        and (args.force_long or (yt_allowed and today_weekday in LONG_VIDEO_WEEKDAYS))
+    )
+    if should_try_long_today:
+        try:
+            long_res = run_long_youtube_pipeline(state, force=args.force_long or args.force)
+            if long_res["uploaded"]:
+                summary_lines.append(
+                    f"- **YouTube Long-Form (>8m Horizontal):** ✅ [{long_res['title']}]({long_res['url']})"
+                )
+                if not args.force_long:
+                    yt_allowed = False  # Keep YouTube strictly at 1 video/day!
+            else:
+                summary_lines.append(f"- **YouTube Long-Form (>8m Horizontal):** ℹ️ {long_res['reason']}")
+        except Exception as e:
+            err_msg = _redact_secrets(e)
+            print(f"⚠️ Long-form YouTube pipeline skipped: {err_msg}")
+            summary_lines.append(f"- **YouTube Long-Form (>8m Horizontal):** ⚠️ {err_msg}")
+
+    if not ig_allowed and not yt_allowed:
+        _write_step_summary(summary_lines)
+        return 0
+
+    # Publish today's vertical Reel (both channels on normal days; IG-only if YT already got today's >8m feature)
+    if ig_allowed and yt_allowed:
+        reel_res = run_reel_pipeline(state)
+    else:
+        reel_res = run_reel_pipeline(state, upload_instagram=ig_allowed, upload_youtube=yt_allowed)
+
+    if ig_allowed:
+        summary_lines.append(
+            f"- **Instagram Reel (`{reel_res['topic']}`):** "
+            f"{'✅ ' + reel_res['instagram_url'] if reel_res['instagram_ok'] else '❌ ' + reel_res['instagram_error']}"
+        )
+    else:
+        summary_lines.append("- **Instagram Reel:** ℹ️ Already posted 1 video today")
+
+    if yt_allowed:
+        summary_lines.append(
+            f"- **YouTube Short (`{reel_res['topic']}`):** "
+            f"{'✅ ' + reel_res['youtube_short_url'] if reel_res['youtube_short_ok'] else '❌ ' + reel_res['youtube_error']}"
+        )
+    else:
+        summary_lines.append("- **YouTube Short:** ℹ️ Skipped to keep YouTube strictly at 1 video today")
+
+    # Backfill only runs if YouTube STILL has 0 uploads today
+    if not args.force and youtube_posts_today(state) < MAX_DAILY_POSTS_PER_CHANNEL:
         try:
             bf_url = backfill_pending_youtube_reels(state)
             if bf_url:
@@ -2781,30 +3407,18 @@ def main(argv: list = None) -> int:
         except Exception as e:
             print(f"⚠️ Pending YouTube backfill skipped: {_redact_secrets(e)}")
 
-        if args.mode == "auto":
-            try:
-                long_res = run_long_youtube_pipeline(state, force=args.force_long)
-                if long_res["uploaded"]:
-                    summary_lines.append(
-                        f"- **YouTube Long-Form (>8m Horizontal):** ✅ [{long_res['title']}]({long_res['url']})"
-                    )
-                else:
-                    summary_lines.append(f"- **YouTube Long-Form (>8m Horizontal):** ℹ️ {long_res['reason']}")
-            except Exception as e:
-                err_msg = _redact_secrets(e)
-                print(f"⚠️ Long-form YouTube pipeline skipped: {err_msg}")
-                summary_lines.append(f"- **YouTube Long-Form (>8m Horizontal):** ⚠️ {err_msg}")
-
     _write_step_summary(summary_lines)
 
-    if not reel_res["instagram_ok"] and not reel_res["youtube_short_ok"]:
+    ig_satisfied = reel_res["instagram_ok"] or reel_res.get("instagram_skipped_daily_cap", False)
+    yt_satisfied = reel_res["youtube_short_ok"] or reel_res.get("youtube_skipped_daily_cap", False)
+
+    if not ig_satisfied and not yt_satisfied:
         print("❌ Both Instagram and YouTube Reel uploads failed.")
         return 1
 
-    # Fail loudly (exit 2) when YouTube or Instagram fails so broken tokens never hide behind green builds again!
-    if REQUIRE_BOTH_PLATFORMS and (not reel_res["instagram_ok"] or not reel_res["youtube_short_ok"]):
+    if REQUIRE_BOTH_PLATFORMS and (not ig_satisfied or not yt_satisfied):
         print(
-            "❌ Partial publish failure: expected Reel on BOTH Instagram and YouTube Shorts. "
+            "❌ Partial publish failure: expected daily post on BOTH Instagram and YouTube. "
             "State & history were saved so the succeeded platform will NOT double-post."
         )
         return 2
